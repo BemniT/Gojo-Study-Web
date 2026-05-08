@@ -315,12 +315,19 @@ export default function EmployeesAttendance() {
     return { bg: '#fef2f2', border: '#fecaca', text: '#991b1b' };
   };
 
-  const handleSave = async () => {
-    setIsSaving(true);
+  const handleSave = useCallback(async ({ silent = false } = {}) => {
+    if (silent) {
+      setIsAutoSaving(true);
+      setAutoSaveState('saving');
+    } else {
+      setIsSaving(true);
+    }
+
     setErrorMessage('');
     setSuccessMessage('');
 
     try {
+      const nextSignature = createAttendanceSignature(selectedDate, attendance);
       const payload = {
         date: selectedDate,
         markedBy,
@@ -348,7 +355,7 @@ export default function EmployeesAttendance() {
         setIsSaving(false);
       }
     }
-  }, [attendance, markedBy, selectedDate];
+  }, [attendance, markedBy, selectedDate]);
 
   useEffect(() => {
     if (!autoSaveEnabled || !selectedDate || isLoading || isSaving || isAutoSaving) {

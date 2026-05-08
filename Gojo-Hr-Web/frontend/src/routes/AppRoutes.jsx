@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
+import { Navigate, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import Sidebar from '../components/Sidebar'
 import Dashboard from '../pages/Dashboard'
 import Register from '../pages/Register'
@@ -74,6 +74,13 @@ function PersistentSidebarShell() {
   )
 }
 
+function RootRedirect() {
+  const admin = readStoredAdmin()
+  const hasSession = Boolean(admin?.hrId || admin?.adminId || admin?.id || admin?.userId)
+
+  return <Navigate to={hasSession ? '/dashboard' : '/login'} replace />
+}
+
 export default function AppRoutes() {
   const location = useLocation()
   const isLoginRoute = location.pathname === '/login'
@@ -110,10 +117,12 @@ export default function AppRoutes() {
       <Routes>
         <Route path="/" element={<RootRedirect />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/employees" element={<Employees />} />
         <Route path="/employees/attendance" element={<EmployeesAttendance />} />
         <Route path="/employees/terminated" element={<TerminatedEmployees />} />
         <Route path="/employees/:id" element={<EmployeeDetail />} />
+        <Route path="/register" element={<Register />} />
         <Route path="/all-chat" element={<AllChat />} />
         <Route path="/settings" element={<HRSettings />} />
       </Routes>

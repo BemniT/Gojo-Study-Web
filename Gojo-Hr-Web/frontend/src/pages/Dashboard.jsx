@@ -3,7 +3,7 @@ import api from '../api';
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { AiFillPicture, AiFillVideoCamera } from "react-icons/ai";
 import { FaBell, FaFacebookMessenger, FaCog, FaUsers, FaBuilding, FaClipboardList, FaChalkboardTeacher, FaChartLine, FaChartPie, FaBirthdayCake, FaCalendarAlt, FaClock, FaArrowUp, FaArrowDown, FaMale, FaFemale, FaThumbsUp, FaTrashAlt, FaPlus } from "react-icons/fa";
-import { get, getDatabase, ref, update } from 'firebase/database';
+import { get, getDatabase, onValue, ref, update } from 'firebase/database';
 import EthiopicCalendar from 'ethiopic-calendar';
 import './Dashboard.css';
 import '../styles/global.css';
@@ -1008,7 +1008,7 @@ function toIsoDateString(date) {
   return `${year}-${month}-${day}`;
 }
 
-function getOrthodoxEasterDate(year) {
+function getOrthodoxHolidayEasterDate(year) {
   const a = year % 4;
   const b = year % 7;
   const c = year % 19;
@@ -1022,7 +1022,7 @@ function getOrthodoxEasterDate(year) {
 }
 
 function getRecurringHolidayEvents(year) {
-  const orthodoxEaster = getOrthodoxEasterDate(year);
+  const orthodoxEaster = getOrthodoxHolidayEasterDate(year);
   const orthodoxGoodFriday = new Date(orthodoxEaster);
   orthodoxGoodFriday.setDate(orthodoxGoodFriday.getDate() - 2);
   const ethiopianNewYearDay = isGregorianLeapYear(year + 1) ? 12 : 11;
@@ -1150,12 +1150,12 @@ function formatActivityTime(value) {
 
 export default function Dashboard() {
   const [employees, setEmployees] = useState([]);
+  const [users, setUsers] = useState([]);
   const [attendanceByDate, setAttendanceByDate] = useState({});
   const [conversations, setConversations] = useState([]);
   const [posts, setPosts] = useState([]);
   const [calendarEvents, setCalendarEvents] = useState([]);
   const [upcomingCalendarEvents, setUpcomingCalendarEvents] = useState([]);
-  const [calendarEvents, setCalendarEvents] = useState([]);
   const [postText, setPostText] = useState('');
   const [postMedia, setPostMedia] = useState(null);
   const [postMediaMeta, setPostMediaMeta] = useState(null);
@@ -1182,7 +1182,6 @@ export default function Dashboard() {
   const db = useMemo(() => getDatabase(app), []);
   const navigate = useNavigate();
   const location = useLocation();
-  const db = getDatabase(app);
   const hrUserId = String(admin?.userId || admin?.id || admin?.uid || admin?.user_id || admin?.hrId || '').trim();
   const [resolvedSchoolCode, setResolvedSchoolCode] = useState(() => {
     const directSchoolCode = String(admin?.schoolCode || '').trim();
@@ -1241,8 +1240,7 @@ export default function Dashboard() {
   const fileInputRef = useRef(null);
   const CALENDAR_WEEK_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const adminChatUserId = String(admin?.userId || admin?.id || '').trim();
-  const activeSchoolCode = String(admin?.activeSchoolCode || admin?.schoolCode || '').trim();
-  const schoolPath = (path) => `Platform1/Schools/${activeSchoolCode}/${String(path || '').replace(/^\/+/, '')}`;
+  const schoolPath = (path) => withSchoolPath(String(path || '').replace(/^\/+/, ''));
   const roleCandidates = [
     admin?.role,
     admin?.userType,
@@ -1402,32 +1400,57 @@ export default function Dashboard() {
         ? await fetchCalendarEvents()
         : await getCachedDashboardResource(calendarCacheKey, fetchCalendarEvents, 5 * 60 * 1000);
 
+      setCalendarEvents(normalizedEvents);
+
+      const todayIsoDate = toIsoDateString(new Date());
+      setUpcomingCalendarEvents(
+        normalizedEvents.filter((eventItem) => {
+          if (!eventItem?.showInUpcomingDeadlines) return false;
+          return String(eventItem.gregorianDate || '') >= todayIsoDate;
+        }),
+      );
+
       if (forceRefresh) {
         setCachedDashboardResource(calendarCacheKey, normalizedEvents);
       }
+    } catch (error) {
+      console.error('Failed to load calendar events:', error);
+      setCalendarEvents([]);
+      setUpcomingCalendarEvents([]);
+    } finally {
+      setCalendarEventsLoading(false);
     }
-    load();
-  }, []);
+  };
 
   useEffect(() => {
+    let cancelled = false;
+
     async function loadUsers() {
       try {
         const res = await api.get('/users');
         const items = res.data || [];
         if (Array.isArray(items)) {
-          setUsers(items);
+          if (!cancelled) {
+            setUsers(items);
+          }
           return;
         }
         const normalized = Object.entries(items || {}).map(([id, payload]) => ({
           ...(payload || {}),
           id,
         }));
-        setUsers(normalized);
+        if (!cancelled) {
+          setUsers(normalized);
+        }
       } catch (e) {
         console.error(e);
-        setUsers([]);
+        if (!cancelled) {
+          setUsers([]);
+        }
       }
     }
+
+    loadUsers();
 
     return () => {
       cancelled = true;
@@ -1492,6 +1515,8 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function fetchCalendarDeadlines() {
       try {
         const response = await api.get('/api/calendar_events', {
@@ -1508,19 +1533,23 @@ export default function Dashboard() {
             ? response.data.events
             : [];
 
-        setUpcomingCalendarEvents(events);
+        if (!cancelled) {
+          setUpcomingCalendarEvents(events);
+        }
       } catch (error) {
         console.error('Failed to load calendar deadlines:', error);
-        setUpcomingCalendarEvents([]);
+        if (!cancelled) {
+          setUpcomingCalendarEvents([]);
+        }
       }
     }
 
-    loadConversations();
+    fetchCalendarDeadlines();
 
     return () => {
       cancelled = true;
     };
-  }, [activeSchoolCode, adminChatUserId, db, employeeContactByUserId]);
+  }, [activeSchoolCode]);
 
   const count = employees.length;
   const departments = Array.from(new Set(employees.map(e => e.department).filter(Boolean))).length || 3;
@@ -2310,6 +2339,8 @@ export default function Dashboard() {
   }).length;
 
   const recentConversations = conversations.slice(0, 5);
+  const unreadMessageCount = Number(chatSidebarData?.unreadCount || 0);
+  const todayMessageCount = Number(chatSidebarData?.todayMessageCount || 0);
   const recentContacts = recentConversations
     .map((conversation) => ({
       userId: conversation?.contact?.userId || conversation?.chatId,
@@ -2761,41 +2792,6 @@ export default function Dashboard() {
       ...currentValue,
       [postId]: !currentValue[postId],
     }));
-  };
-
-  const resetPostComposer = () => {
-    setPostText('');
-    setPostMedia(null);
-    setPostMediaPreviewUrl('');
-    setTargetRole('all');
-    setEditingPostId('');
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  const closeCreatePostModal = () => {
-    setShowCreatePostModal(false);
-    setActivePostMenuId('');
-    resetPostComposer();
-  };
-
-  const openCreatePostModal = () => {
-    resetPostComposer();
-    setShowCreatePostModal(true);
-  };
-
-  const openEditPostModal = (post) => {
-    setEditingPostId(getPostId(post));
-    setPostText(post?.message || '');
-    setPostMedia(null);
-    setPostMediaPreviewUrl(post?.postUrl || '');
-    setTargetRole((post?.targetRole || 'all').toString().toLowerCase());
-    setActivePostMenuId('');
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-    setShowCreatePostModal(true);
   };
 
   const readPostMediaFile = (file) => new Promise((resolve) => {
@@ -3435,7 +3431,8 @@ export default function Dashboard() {
                               </button>
                             ) : null}
                           </div>
-                      ) : (
+                        );
+                      })() : (
                         <div style={{ padding: '0 16px 6px', minHeight: 56 }} />
                       )}
 

@@ -235,7 +235,7 @@ useEffect(() => {
                             className="notification-row"
                             onClick={async () => {
                               try {
-                                await axios.post("http://127.0.0.1:5000/api/mark_post_notification_read", {
+                                await axios.post(`${BACKEND_BASE}/api/mark_post_notification_read`, {
                                   notificationId: n.notificationId,
                                 });
                               } catch (err) {
