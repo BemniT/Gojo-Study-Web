@@ -18,6 +18,8 @@ import {
 } from "react-icons/fa";
 import axios from "axios";
 import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { FixedSizeList } from 'react-window';
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";
 import ProfileAvatar from "../components/ProfileAvatar";
@@ -121,6 +123,15 @@ function Parent() {
   const parentsDataRef = useRef({});
   const studentsDataRef = useRef({});
   const [typingUserId, setTypingUserId] = useState(null);
+
+  // Pagination states
+  const [paginationCursor, setPaginationCursor] = useState(null);
+  const [hasMoreParents, setHasMoreParents] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const PAGE_SIZE = 50;
+  
+  // React Query client for cache management
+  const queryClient = useQueryClient();
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -433,17 +444,27 @@ function Parent() {
     }
   }, [selectedParent]);
 
-  // Fetch parents
-  useEffect(() => {
-    let cancelled = false;
-
-    const fetchParents = async () => {
+  // Fetch parents (PAGINATED WITH REACT QUERY)
+  const { data: reactQueryParents, isLoading: isParentsQueryLoading, refetch: refetchParents } = useQuery({
+    queryKey: ['parents', PARENT_DIRECTORY_URL],
+    queryFn: async () => {
       setLoadingParents(true);
       try {
-        const parentDirectoryData = await fetchCachedJson(PARENT_DIRECTORY_URL, {
-          ttlMs: DIRECTORY_CACHE_TTL_MS,
-          fallbackValue: {},
-        });
+        // PAGINATION: Fetch first page only (50 parents)
+        const paginatedUrl = `${PARENT_DIRECTORY_URL}?orderBy="$key"&limitToFirst=${PAGE_SIZE}`;
+        const parentDirectoryResponse = await axios.get(paginatedUrl);
+        const parentDirectoryData = parentDirectoryResponse.data || {};
+
+        // Set pagination cursor
+        const parentKeys = Object.keys(parentDirectoryData);
+        if (parentKeys.length > 0) {
+          const lastKey = parentKeys[parentKeys.length - 1];
+          setPaginationCursor(lastKey);
+        }
+        
+        // Check if there are more parents
+        setHasMoreParents(parentKeys.length >= PAGE_SIZE);
+
         const directoryParentList = sortParentsByName(
           Object.entries(parentDirectoryData || {})
             .map(([parentKey, parentValue]) => normalizeParentDirectoryEntry(parentKey, parentValue))
@@ -451,15 +472,14 @@ function Parent() {
         );
 
         if (directoryParentList.length > 0) {
-          if (cancelled) return;
-          setParents(directoryParentList);
           setSelectedParent((previousParent) => {
             if (!previousParent?.userId) return previousParent;
             return directoryParentList.find((parentValue) => String(parentValue.userId) === String(previousParent.userId)) || previousParent;
           });
-          return;
+          return directoryParentList;
         }
 
+        // Fallback: If ParentDirectory is empty, fetch from Users/Parents nodes (no pagination needed as it's rare)
         const { usersData: users, parentsData, studentsData } = await loadParentDatasets();
 
         const findParentRecordByUserId = (canonicalUserId) => {
@@ -536,24 +556,72 @@ function Parent() {
             };
           });
 
-        if (cancelled) return;
-        setParents(sortParentsByName(parentList));
+        setHasMoreParents(false); // Fallback path loads all, so no more to load
+        return sortParentsByName(parentList);
       } catch (err) {
         console.error("Error fetching parents:", err);
-        if (cancelled) return;
-        setParents([]);
+        return [];
       } finally {
-        if (!cancelled) {
-          setLoadingParents(false);
-        }
+        setLoadingParents(false);
       }
-    };
-    fetchParents();
+    },
+    enabled: Boolean(PARENT_DIRECTORY_URL),
+    staleTime: 5 * 60 * 1000,
+    cacheTime: 10 * 60 * 1000,
+  });
+  
+  // Sync React Query data with local state
+  useEffect(() => {
+    if (reactQueryParents && Array.isArray(reactQueryParents)) {
+      setParents(reactQueryParents);
+    }
+  }, [reactQueryParents]);
+  
+  // Update loading state
+  useEffect(() => {
+    setLoadingParents(isParentsQueryLoading);
+  }, [isParentsQueryLoading]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [PARENT_DIRECTORY_URL]);
+  // ------------------ LOAD MORE PARENTS ------------------
+  const loadMoreParents = async () => {
+    if (!hasMoreParents || loadingMore || !paginationCursor) return;
+
+    setLoadingMore(true);
+    try {
+      // Fetch next page using cursor
+      const paginatedUrl = `${PARENT_DIRECTORY_URL}?orderBy="$key"&startAfter="${paginationCursor}"&limitToFirst=${PAGE_SIZE}`;
+      const response = await axios.get(paginatedUrl);
+      const newParentsData = response.data || {};
+
+      if (Object.keys(newParentsData).length === 0) {
+        setHasMoreParents(false);
+        setLoadingMore(false);
+        return;
+      }
+
+      const newParentList = Object.entries(newParentsData)
+        .map(([parentKey, parentValue]) => normalizeParentDirectoryEntry(parentKey, parentValue))
+        .filter((parentValue) => parentValue.userId);
+
+      // Update cursor
+      const parentKeys = Object.keys(newParentsData);
+      if (parentKeys.length > 0) {
+        const lastKey = parentKeys[parentKeys.length - 1];
+        setPaginationCursor(lastKey);
+      }
+
+      // Check if there are more parents
+      setHasMoreParents(parentKeys.length >= PAGE_SIZE);
+
+      // Append to existing parents
+      const updatedParentList = sortParentsByName([...parents, ...newParentList]);
+      setParents(updatedParentList);
+    } catch (err) {
+      console.error("Error loading more parents:", err);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   // Mark post notification & navigate
   const handleNotificationClick = async (notification) => {
@@ -1686,65 +1754,116 @@ function Parent() {
               <p style={{ width: contentWidth, marginLeft: contentLeft, textAlign: "center", color: "var(--text-secondary)" }}>No parents found.</p>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
-                {filteredParents.map((p, i) => (
-                  <div
-                    key={p.userId}
-                    onClick={() => { setSelectedParent(p); setSidebarVisible(true); }}
-                    style={{
-                      ...parentCardBase,
-                      width: contentWidth,
-                      background: selectedParent?.userId === p.userId ? "var(--surface-accent)" : "var(--surface-panel)",
-                      border: selectedParent?.userId === p.userId ? "2px solid var(--accent-strong)" : "1px solid var(--border-soft)",
-                      boxShadow: selectedParent?.userId === p.userId ? "var(--shadow-glow)" : "var(--shadow-soft)",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: "12px", paddingRight: 94 }}>
-                      <div
-                        style={{
-                          width: 36,
-                          height: 36,
-                          borderRadius: 10,
-                          background: "color-mix(in srgb, var(--accent-soft) 75%, var(--surface-panel) 25%)",
-                          color: "var(--accent-strong)",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          fontWeight: 800,
-                          fontSize: 13,
-                          flex: "0 0 auto",
-                        }}
-                      >
-                        {i + 1}
-                      </div>
-                      <ProfileAvatar src={p.profileImage} name={p.name} alt={p.name} loading="lazy" style={{ width: 48, height: 48, borderRadius: "50%", objectFit: "cover", border: selectedParent?.userId === p.userId ? "3px solid var(--accent-strong)" : "3px solid var(--border-soft)", transition: "all 0.3s ease" }} />
-                      <div style={{ minWidth: 0 }}>
-                        <h3 style={{ margin: 0, fontSize: "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                          {p.name}
-                        </h3>
-                        <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                          {p.email && p.email !== "N/A" ? p.email : `${p.childRelationship || "N/A"}: ${p.childName || "N/A"}`}
+                <FixedSizeList
+                  height={Math.min(600, filteredParents.length * 80)}
+                  itemCount={filteredParents.length}
+                  itemSize={80}
+                  width={contentWidth}
+                  style={{ maxWidth: "100%" }}
+                >
+                  {({ index, style }) => {
+                    const p = filteredParents[index];
+                    return (
+                      <div style={{ ...style, padding: "6px 0" }}>
+                        <div
+                          key={p.userId}
+                          onClick={() => { setSelectedParent(p); setSidebarVisible(true); }}
+                          style={{
+                            ...parentCardBase,
+                            width: "100%",
+                            background: selectedParent?.userId === p.userId ? "var(--surface-accent)" : "var(--surface-panel)",
+                            border: selectedParent?.userId === p.userId ? "2px solid var(--accent-strong)" : "1px solid var(--border-soft)",
+                            boxShadow: selectedParent?.userId === p.userId ? "var(--shadow-glow)" : "var(--shadow-soft)",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: "12px", paddingRight: 94 }}>
+                            <div
+                              style={{
+                                width: 36,
+                                height: 36,
+                                borderRadius: 10,
+                                background: "color-mix(in srgb, var(--accent-soft) 75%, var(--surface-panel) 25%)",
+                                color: "var(--accent-strong)",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                fontWeight: 800,
+                                fontSize: 13,
+                                flex: "0 0 auto",
+                              }}
+                            >
+                              {index + 1}
+                            </div>
+                            <ProfileAvatar src={p.profileImage} name={p.name} alt={p.name} loading="lazy" style={{ width: 48, height: 48, borderRadius: "50%", objectFit: "cover", border: selectedParent?.userId === p.userId ? "3px solid var(--accent-strong)" : "3px solid var(--border-soft)", transition: "all 0.3s ease" }} />
+                            <div style={{ minWidth: 0 }}>
+                              <h3 style={{ margin: 0, fontSize: "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                {p.name}
+                              </h3>
+                              <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                {p.email && p.email !== "N/A" ? p.email : `${p.childRelationship || "N/A"}: ${p.childName || "N/A"}`}
+                              </div>
+                            </div>
+                          </div>
+                          <div
+                            style={{
+                              position: "absolute",
+                              top: 14,
+                              right: 12,
+                              padding: "5px 9px",
+                              borderRadius: 999,
+                              background: p.isActive === false ? "var(--warning-soft)" : "var(--success-soft)",
+                              color: p.isActive === false ? "var(--danger)" : "var(--success)",
+                              border: p.isActive === false ? "1px solid var(--warning-border)" : "1px solid var(--success-border)",
+                              fontSize: 10,
+                              fontWeight: 900,
+                              lineHeight: 1,
+                            }}
+                          >
+                            {p.isActive === false ? "Inactive" : "Active"}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <div
-                      style={{
-                        position: "absolute",
-                        top: 14,
-                        right: 12,
-                        padding: "5px 9px",
-                        borderRadius: 999,
-                        background: p.isActive === false ? "var(--warning-soft)" : "var(--success-soft)",
-                        color: p.isActive === false ? "var(--danger)" : "var(--success)",
-                        border: p.isActive === false ? "1px solid var(--warning-border)" : "1px solid var(--success-border)",
-                        fontSize: 10,
-                        fontWeight: 900,
-                        lineHeight: 1,
-                      }}
-                    >
-                      {p.isActive === false ? "Inactive" : "Active"}
-                    </div>
+                    );
+                  }}
+                </FixedSizeList>
+                
+                {/* Load More Button */}
+                {hasMoreParents && !loadingMore && (
+                  <button
+                    onClick={loadMoreParents}
+                    style={{
+                      width: contentWidth,
+                      maxWidth: "100%",
+                      padding: "12px 16px",
+                      background: "var(--accent-strong)",
+                      border: "none",
+                      borderRadius: "12px",
+                      color: "#fff",
+                      fontSize: "13px",
+                      fontWeight: 800,
+                      cursor: "pointer",
+                      transition: "all 0.2s ease",
+                      boxShadow: "var(--shadow-soft)",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = "var(--accent-hover)";
+                      e.currentTarget.style.transform = "scale(1.02)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = "var(--accent-strong)";
+                      e.currentTarget.style.transform = "scale(1)";
+                    }}
+                  >
+                    Load More Parents
+                  </button>
+                )}
+                
+                {/* Loading More Indicator */}
+                {loadingMore && (
+                  <div style={{ width: contentWidth, maxWidth: "100%", textAlign: "center", padding: "12px", color: "var(--text-muted)", fontSize: "13px" }}>
+                    Loading more parents...
                   </div>
-                ))}
+                )}
               </div>
             )}
           </div>

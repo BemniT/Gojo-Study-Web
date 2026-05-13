@@ -24,6 +24,8 @@ import app from "../firebase";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { FixedSizeList } from 'react-window';
 import { BACKEND_BASE } from "../config.js";
 import LessonPlanInsightsModal from "../components/LessonPlanInsightsModal";
 import ProfileAvatar from "../components/ProfileAvatar";
@@ -134,6 +136,15 @@ function TeachersPage() {
   const [adminVerifying, setAdminVerifying] = useState(false);
   const [pendingToggle, setPendingToggle] = useState(null); // { userId, curBool, newActive }
   const [teachersInitialized, setTeachersInitialized] = useState(Boolean(bootstrapCache));
+
+  // Pagination states
+  const [paginationCursor, setPaginationCursor] = useState(null);
+  const [hasMoreTeachers, setHasMoreTeachers] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const PAGE_SIZE = 50;
+  
+  // React Query client for cache management
+  const queryClient = useQueryClient();
 
   // open modal to confirm toggle and collect admin credentials
   const handleToggleActiveTeacher = async () => {
@@ -688,9 +699,10 @@ useEffect(() => {
 }, []);
 
 
-  // ---------------- FETCH TEACHERS ----------------
-  useEffect(() => {
-    const fetchTeachers = async () => {
+  // ---------------- FETCH TEACHERS WITH REACT QUERY ----------------
+  const { data: reactQueryTeachers, isLoading: isTeachersQueryLoading, refetch: refetchTeachers } = useQuery({
+    queryKey: ['teachers', schoolCode, teachersRefreshNonce],
+    queryFn: async () => {
       const isLikelyIdOrMissingName = (nameValue, teacherIdValue) => {
         const name = String(nameValue || "").trim();
         const teacherId = String(teacherIdValue || "").trim();
@@ -753,10 +765,20 @@ useEffect(() => {
       setLoadingTeachers(true);
 
       try {
-        const teacherDirectoryData = await fetchCachedJson(TEACHER_DIRECTORY_URL, {
-          ttlMs: 15 * 60 * 1000,
-          fallbackValue: {},
-        });
+        // PAGINATION: Fetch paginated TeacherDirectory
+        const paginatedUrl = `${TEACHER_DIRECTORY_URL}?orderBy="$key"&limitToFirst=${PAGE_SIZE}`;
+        const teacherDirectoryResponse = await axios.get(paginatedUrl);
+        const teacherDirectoryData = teacherDirectoryResponse.data || {};
+
+        // Set pagination cursor
+        const teacherKeys = Object.keys(teacherDirectoryData);
+        if (teacherKeys.length > 0) {
+          const lastKey = teacherKeys[teacherKeys.length - 1];
+          setPaginationCursor(lastKey);
+        }
+        
+        // Check if there are more teachers
+        setHasMoreTeachers(teacherKeys.length >= PAGE_SIZE);
 
         const teacherSummaryList = Object.entries(teacherDirectoryData || {})
           .map(([teacherId, teacher]) => {
@@ -1113,19 +1135,152 @@ useEffect(() => {
           finalTeachers = fromUsers;
         }
 
-        setTeachers(finalTeachers);
         setTeachersInitialized(true);
-
         persistTeachersCache(finalTeachers, usersMap, resolvedGrades);
+        return finalTeachers;
       } catch (err) {
         console.error("Error fetching teachers:", err);
+        return [];
       } finally {
         setLoadingTeachers(false);
       }
-    };
+    },
+    enabled: Boolean(schoolCode),
+    staleTime: 5 * 60 * 1000,
+    cacheTime: 10 * 60 * 1000,
+  });
+  
+  // Sync React Query data with local state
+  useEffect(() => {
+    if (reactQueryTeachers && Array.isArray(reactQueryTeachers)) {
+      setTeachers(reactQueryTeachers);
+    }
+  }, [reactQueryTeachers]);
+  
+  // Update loading state
+  useEffect(() => {
+    setLoadingTeachers(isTeachersQueryLoading);
+  }, [isTeachersQueryLoading]);
 
-    fetchTeachers();
-  }, [teachersRefreshNonce]);
+  // ------------------ LOAD MORE TEACHERS ------------------
+  const loadMoreTeachers = async () => {
+    if (!hasMoreTeachers || loadingMore || !paginationCursor) return;
+
+    setLoadingMore(true);
+    try {
+      // Fetch next page using cursor
+      const paginatedUrl = `${TEACHER_DIRECTORY_URL}?orderBy="$key"&startAfter="${paginationCursor}"&limitToFirst=${PAGE_SIZE}`;
+      const response = await axios.get(paginatedUrl);
+      const newTeachersData = response.data || {};
+
+      if (Object.keys(newTeachersData).length === 0) {
+        setHasMoreTeachers(false);
+        setLoadingMore(false);
+        return;
+      }
+
+      const resolveProfileImage = (...candidates) => {
+        for (const candidate of candidates) {
+          const normalized = String(candidate || "").trim();
+          if (normalized && /^(https?:\/\/|data:|blob:|\/)/i.test(normalized)) {
+            return normalized;
+          }
+        }
+        return "/default-profile.png";
+      };
+
+      const newTeacherList = Object.entries(newTeachersData).map(([teacherId, teacher]) => {
+        const userId = String(teacher?.userId || "").trim();
+        if (!userId) return null;
+
+        const gradesSubjects = Array.isArray(teacher?.gradesSubjects)
+          ? teacher.gradesSubjects
+              .map((entry) => ({
+                courseId: String(entry?.courseId || "").trim(),
+                grade: String(entry?.grade || "").trim(),
+                section: String(entry?.section || "").trim(),
+                subject: String(entry?.subject || "").trim(),
+              }))
+              .filter((entry) => entry.grade && entry.section && entry.subject)
+          : [];
+
+        const subjectsUnique = Array.isArray(teacher?.subjectsUnique)
+          ? teacher.subjectsUnique.filter(Boolean).map((subject) => String(subject).trim()).filter(Boolean)
+          : Array.from(
+              new Set(
+                gradesSubjects
+                  .map((entry) => String(entry?.subject || "").trim())
+                  .filter(Boolean)
+              )
+            );
+
+        return {
+          teacherId: String(teacher?.teacherId || teacherId || "").trim(),
+          userId,
+          name: String(teacher?.name || "").trim() || "Unknown Teacher",
+          profileImage: resolveProfileImage(teacher?.profileImage),
+          gradesSubjects,
+          subjectsUnique,
+          email: teacher?.email || null,
+          phone: teacher?.phone || null,
+          gender: teacher?.gender || null,
+          isActive: teacher?.isActive !== false,
+        };
+      }).filter(Boolean);
+
+      // Update cursor
+      const teacherKeys = Object.keys(newTeachersData);
+      if (teacherKeys.length > 0) {
+        const lastKey = teacherKeys[teacherKeys.length - 1];
+        setPaginationCursor(lastKey);
+      }
+
+      // Check if there are more teachers
+      setHasMoreTeachers(teacherKeys.length >= PAGE_SIZE);
+
+      // Append to existing teachers
+      const updatedTeacherList = [...teachers, ...newTeacherList];
+      setTeachers(updatedTeacherList);
+
+      // Update grades from new teachers
+      const newGrades = Array.from(
+        new Set([
+          ...gradeOptions,
+          ...newTeacherList
+            .flatMap((teacher) => teacher?.gradesSubjects || [])
+            .map((gs) => String(gs?.grade || "").trim())
+            .filter((g) => /^[1-9]$|^1[0-2]$/.test(g))
+        ])
+      ).sort((a, b) => Number(a) - Number(b));
+      
+      setGradeOptions(newGrades);
+
+      // Update cache
+      const newUsersMap = newTeacherList.reduce((acc, teacher) => {
+        acc[teacher.userId] = {
+          userId: teacher.userId,
+          teacherId: teacher.teacherId,
+          role: "teacher",
+          name: teacher.name,
+          profileImage: teacher.profileImage,
+          email: teacher.email,
+          phone: teacher.phone,
+          gender: teacher.gender,
+          isActive: teacher.isActive,
+        };
+        return acc;
+      }, {});
+      
+      const combinedUsersMap = { ...usersByUserId, ...newUsersMap };
+      setUsersByUserId(combinedUsersMap);
+      persistTeachersCache(updatedTeacherList, combinedUsersMap, newGrades);
+    } catch (err) {
+      console.error("Error loading more teachers:", err);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
 
   useEffect(() => {
     if (!selectedTeacher?.userId) {
@@ -3160,64 +3315,115 @@ useEffect(() => {
             <p style={{ width: contentWidth, textAlign: "center", color: "var(--text-muted)", margin: "0 auto" }}>No teachers found for this grade.</p>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", alignItems: isNarrow ? "center" : "flex-start", gap: "12px", paddingLeft: contentLeft }}>
-              {displayedTeachers.map((t, i) => (
-                <div
-                  key={t.teacherId}
-                  onClick={() => setSelectedTeacher(t)}
-                  className="teacher-card"
-                  style={listCardStyle(selectedTeacher?.teacherId === t.teacherId)}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: isNarrow ? 8 : 12, minWidth: 0, flex: 1 }}>
-                    <div
-                      style={{
-                        width: isNarrow ? 30 : 36,
-                        height: isNarrow ? 30 : 36,
-                        borderRadius: isNarrow ? 8 : 10,
-                        background: "var(--surface-accent)",
-                        color: "var(--accent)",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        fontWeight: 800,
-                        fontSize: isNarrow ? 11 : 13,
-                        flex: "0 0 auto",
-                      }}
-                    >
-                      {i + 1}
-                    </div>
-                    <ProfileAvatar src={t.profileImage} name={t.name} alt={t.name} loading="lazy" style={{ width: isNarrow ? 40 : 48, height: isNarrow ? 40 : 48, borderRadius: "50%", border: selectedTeacher?.teacherId === t.teacherId ? "2px solid var(--accent)" : "2px solid var(--border-soft)", objectFit: "cover", transition: "all 0.3s ease", flex: "0 0 auto" }} />
-                    <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 5 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                      <h3 style={{ margin: 0, fontSize: isNarrow ? "12px" : "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</h3>
-                      {unreadTeachers[t.userId] > 0 && (
-                        <span style={{ background: 'var(--danger)', color: '#fff', borderRadius: 12, padding: isNarrow ? '1px 5px' : '2px 6px', fontSize: isNarrow ? 10 : 11, fontWeight: 700, marginLeft: 8 }}>{unreadTeachers[t.userId]}</span>
-                      )}
-                    </div>
-                    <div style={{ color: 'var(--text-muted)', fontSize: isNarrow ? "10px" : "11px", marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {t.subjectsUnique?.length > 0 ? t.subjectsUnique.join(', ') : 'No assigned courses'}
-                    </div>
-                    </div>
-                  </div>
+              <FixedSizeList
+                height={Math.min(600, displayedTeachers.length * 80)}
+                itemCount={displayedTeachers.length}
+                itemSize={80}
+                width={contentWidth}
+                style={{ maxWidth: "100%" }}
+              >
+                {({ index, style }) => {
+                  const t = displayedTeachers[index];
+                  return (
+                    <div style={{ ...style, padding: "6px 0" }}>
+                      <div
+                        key={t.teacherId}
+                        onClick={() => setSelectedTeacher(t)}
+                        className="teacher-card"
+                        style={listCardStyle(selectedTeacher?.teacherId === t.teacherId)}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: isNarrow ? 8 : 12, minWidth: 0, flex: 1 }}>
+                          <div
+                            style={{
+                              width: isNarrow ? 30 : 36,
+                              height: isNarrow ? 30 : 36,
+                              borderRadius: isNarrow ? 8 : 10,
+                              background: "var(--surface-accent)",
+                              color: "var(--accent)",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontWeight: 800,
+                              fontSize: isNarrow ? 11 : 13,
+                              flex: "0 0 auto",
+                            }}
+                          >
+                            {index + 1}
+                          </div>
+                          <ProfileAvatar src={t.profileImage} name={t.name} alt={t.name} loading="lazy" style={{ width: isNarrow ? 40 : 48, height: isNarrow ? 40 : 48, borderRadius: "50%", border: selectedTeacher?.teacherId === t.teacherId ? "2px solid var(--accent)" : "2px solid var(--border-soft)", objectFit: "cover", transition: "all 0.3s ease", flex: "0 0 auto" }} />
+                          <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 5 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                            <h3 style={{ margin: 0, fontSize: isNarrow ? "12px" : "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</h3>
+                            {unreadTeachers[t.userId] > 0 && (
+                              <span style={{ background: 'var(--danger)', color: '#fff', borderRadius: 12, padding: isNarrow ? '1px 5px' : '2px 6px', fontSize: isNarrow ? 10 : 11, fontWeight: 700, marginLeft: 8 }}>{unreadTeachers[t.userId]}</span>
+                            )}
+                          </div>
+                          <div style={{ color: 'var(--text-muted)', fontSize: isNarrow ? "10px" : "11px", marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {t.subjectsUnique?.length > 0 ? t.subjectsUnique.join(', ') : 'No assigned courses'}
+                          </div>
+                          </div>
+                        </div>
 
-                  <div style={{ flex: "0 0 auto", marginLeft: isNarrow ? 4 : 8 }}>
-                    <span
-                      style={{
-                        padding: isNarrow ? "4px 8px" : "5px 10px",
-                        borderRadius: 999,
-                        border: "1px solid var(--border-soft)",
-                        background: "color-mix(in srgb, var(--surface-panel) 78%, white)",
-                        color: "var(--text-secondary)",
-                        fontSize: isNarrow ? 9 : 10,
-                        fontWeight: 800,
-                        letterSpacing: "0.2px",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {t.subjectsUnique?.length || 0} Subject{(t.subjectsUnique?.length || 0) === 1 ? "" : "s"}
-                    </span>
-                  </div>
+                        <div style={{ flex: "0 0 auto", marginLeft: isNarrow ? 4 : 8 }}>
+                          <span
+                            style={{
+                              padding: isNarrow ? "4px 8px" : "5px 10px",
+                              borderRadius: 999,
+                              border: "1px solid var(--border-soft)",
+                              background: "color-mix(in srgb, var(--surface-panel) 78%, white)",
+                              color: "var(--text-secondary)",
+                              fontSize: isNarrow ? 9 : 10,
+                              fontWeight: 800,
+                              letterSpacing: "0.2px",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {t.subjectsUnique?.length || 0} Subject{(t.subjectsUnique?.length || 0) === 1 ? "" : "s"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }}
+              </FixedSizeList>
+              
+              {/* Load More Button */}
+              {hasMoreTeachers && !loadingMore && (
+                <button
+                  onClick={loadMoreTeachers}
+                  style={{
+                    width: contentWidth,
+                    maxWidth: "100%",
+                    padding: "12px 16px",
+                    background: "var(--accent-strong)",
+                    border: "none",
+                    borderRadius: "12px",
+                    color: "#fff",
+                    fontSize: "13px",
+                    fontWeight: 800,
+                    cursor: "pointer",
+                    transition: "all 0.2s ease",
+                    boxShadow: "var(--shadow-soft)",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "var(--accent-hover)";
+                    e.currentTarget.style.transform = "scale(1.02)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "var(--accent-strong)";
+                    e.currentTarget.style.transform = "scale(1)";
+                  }}
+                >
+                  Load More Teachers
+                </button>
+              )}
+              
+              {/* Loading More Indicator */}
+              {loadingMore && (
+                <div style={{ width: contentWidth, maxWidth: "100%", textAlign: "center", padding: "12px", color: "var(--text-muted)", fontSize: "13px" }}>
+                  Loading more teachers...
                 </div>
-              ))}
+              )}
             </div>
           )}
           </div>

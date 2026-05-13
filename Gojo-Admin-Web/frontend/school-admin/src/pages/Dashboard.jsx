@@ -11,6 +11,7 @@ import EthiopicCalendar from "ethiopic-calendar";
 import ProfileAvatar from "../components/ProfileAvatar";
 import { formatFileSize, optimizePostMedia } from "../utils/postMedia";
 
+
 const ETHIOPIAN_MONTHS = [
   "Meskerem",
   "Tikimt",
@@ -1878,6 +1879,8 @@ function Dashboard() {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
+      
+      // Refetch posts after creating new post
       await fetchPosts();
     } catch (error) {
       const message = error?.response?.data?.message || error?.message || "Post could not be published.";

@@ -9,6 +9,8 @@ import { format, parseISO, startOfWeek, startOfMonth } from "date-fns";
 import { useMemo } from "react";
 import { getDatabase, ref, onValue, push, update } from "firebase/database";
 import { getFirestore, collection, getDocs } from "firebase/firestore";
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { FixedSizeList } from 'react-window';
 
 import app, { db, firestore } from "../firebase"; // Adjust the path if needed
 import { BACKEND_BASE } from "../config.js";
@@ -40,8 +42,17 @@ function StudentsPage() {
   const [paymentHistory, setPaymentHistory] = useState({});
   const [marks, setMarks] = useState({});
   const [studentsLoading, setStudentsLoading] = useState(true);
+  
+  // Pagination states
+  const [paginationCursor, setPaginationCursor] = useState(null);
+  const [hasMoreStudents, setHasMoreStudents] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const PAGE_SIZE = 50;
   const [currentAcademicYear, setCurrentAcademicYear] = useState("");
   const [gradeOptions, setGradeOptions] = useState([]);
+  
+  // React Query client for cache management
+  const queryClient = useQueryClient();
   const [unreadMap, setUnreadMap] = useState({});
   const [editingProfile, setEditingProfile] = useState(false);
   const [editForm, setEditForm] = useState({});
@@ -890,30 +901,30 @@ function StudentsPage() {
 
 
 
-  // ------------------ FETCH STUDENTS ------------------
-  useEffect(() => {
-    const fetchStudents = async () => {
+  // ------------------ FETCH STUDENTS (PAGINATED WITH REACT QUERY) ------------------
+  const { data: reactQueryStudents, isLoading: isStudentsQueryLoading, refetch: refetchStudents } = useQuery({
+    queryKey: ['students', schoolCode],
+    queryFn: async () => {
       const cached = readStudentsCache();
       if (cached && Array.isArray(cached.studentList)) {
-        setStudents(cached.studentList);
         setGradeOptions(Array.isArray(cached.gradeOptions) ? cached.gradeOptions : []);
         setCurrentAcademicYear(String(cached.currentAcademicYear || ""));
         setStudentsLoading(false);
-        return;
+        
+        if (cached.studentList.length < PAGE_SIZE) {
+          setHasMoreStudents(false);
+        }
+        return cached.studentList;
       }
 
       try {
-        const [schoolInfoData, gradesData, studentDirectoryData] = await Promise.all([
+        const [schoolInfoData, gradesData] = await Promise.all([
           fetchCachedJson(`${DB_URL}/schoolInfo.json`, {
             ttlMs: BIG_NODE_CACHE_TTL_MS,
             fallbackValue: {},
           }),
           fetchCachedJson(`${DB_URL}/GradeManagement/grades.json`, {
             ttlMs: BIG_NODE_CACHE_TTL_MS,
-            fallbackValue: {},
-          }),
-          fetchCachedJson(STUDENT_DIRECTORY_URL, {
-            ttlMs: DIRECTORY_CACHE_TTL_MS,
             fallbackValue: {},
           }),
         ]);
@@ -929,38 +940,59 @@ function StudentsPage() {
           return managedGrades.includes(String(prev)) ? prev : "All";
         });
 
-        const directoryStudentList = Object.entries(studentDirectoryData || {}).map(([studentId, student]) =>
+        // PAGINATION: Fetch first page only (50 students)
+        const paginatedUrl = `${DB_URL}/StudentDirectory.json?orderBy="$key"&limitToFirst=${PAGE_SIZE}`;
+        const studentDirectoryResponse = await axios.get(paginatedUrl);
+        const studentDirectoryData = studentDirectoryResponse.data || {};
+
+        const directoryStudentList = Object.entries(studentDirectoryData).map(([studentId, student]) =>
           normalizeStudentSummary(studentId, student)
         );
+
+        // Set pagination cursor to last student key
+        const studentKeys = Object.keys(studentDirectoryData);
+        if (studentKeys.length > 0) {
+          const lastKey = studentKeys[studentKeys.length - 1];
+          setPaginationCursor(lastKey);
+        }
+        
+        // Check if there are more students
+        setHasMoreStudents(studentKeys.length >= PAGE_SIZE);
 
         if (directoryStudentList.length > 0) {
           persistStudentList(directoryStudentList, managedGrades, activeAcademicYear);
           setStudentsLoading(false);
-          const hydratedDirectoryStudentList = await hydrateMissingStudentProfileImages(directoryStudentList);
-          persistStudentList(hydratedDirectoryStudentList, managedGrades, activeAcademicYear);
-          return;
+          
+          // Hydrate profile images in background
+          hydrateMissingStudentProfileImages(directoryStudentList).then((hydratedList) => {
+            persistStudentList(hydratedList, managedGrades, activeAcademicYear);
+          });
+          return directoryStudentList;
         }
 
-        const studentsData = await fetchCachedJson(`${DB_URL}/Students.json`, {
-          ttlMs: BIG_NODE_CACHE_TTL_MS,
-          fallbackValue: {},
-        });
+        // Fallback: If StudentDirectory is empty, fetch from Students node (paginated)
+        const studentsPaginatedUrl = `${DB_URL}/Students.json?orderBy="$key"&limitToFirst=${PAGE_SIZE}`;
+        const studentsResponse = await axios.get(studentsPaginatedUrl);
+        const studentsData = studentsResponse.data || {};
 
-        const studentKeys = Object.keys(studentsData);
+        const studentKeys2 = Object.keys(studentsData);
+        if (studentKeys2.length > 0) {
+          const lastKey = studentKeys2[studentKeys2.length - 1];
+          setPaginationCursor(lastKey);
+        }
+        
+        setHasMoreStudents(studentKeys2.length >= PAGE_SIZE);
 
-        const baseStudentList = studentKeys.map((id) => normalizeStudentSummary(id, studentsData[id]));
+        const baseStudentList = studentKeys2.map((id) => normalizeStudentSummary(id, studentsData[id]));
 
         setStudentsLoading(false);
         persistStudentList(baseStudentList, managedGrades, activeAcademicYear);
 
-        try {
-          const usersData = readCachedJson(`${DB_URL}/Users.json`, {
-            ttlMs: BIG_NODE_CACHE_TTL_MS,
-          });
-          if (!usersData || typeof usersData !== "object") {
-            return;
-          }
-
+        // Hydrate with user data in background
+        const usersData = readCachedJson(`${DB_URL}/Users.json`, {
+          ttlMs: BIG_NODE_CACHE_TTL_MS,
+        });
+        if (usersData && typeof usersData === "object") {
           const hydratedStudentList = baseStudentList.map((student) => {
             const user = usersData[student.userId] || {};
             return {
@@ -975,18 +1007,83 @@ function StudentsPage() {
           });
 
           persistStudentList(hydratedStudentList, managedGrades, activeAcademicYear);
-        } catch (userErr) {
-          // keep base list if users node is slow/unavailable
+          return hydratedStudentList;
         }
+        
+        return baseStudentList;
       } catch (err) {
         console.error("Error fetching students:", err);
+        return [];
       } finally {
         setStudentsLoading(false);
       }
-    };
+    },
+    enabled: Boolean(schoolCode),
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    cacheTime: 10 * 60 * 1000, // 10 minutes
+  });
+  
+  // Sync React Query data with local state
+  useEffect(() => {
+    if (reactQueryStudents && Array.isArray(reactQueryStudents)) {
+      setStudents(reactQueryStudents);
+    }
+  }, [reactQueryStudents]);
+  
+  // Update loading state
+  useEffect(() => {
+    setStudentsLoading(isStudentsQueryLoading);
+  }, [isStudentsQueryLoading]);
 
-    fetchStudents();
-  }, []);
+  // ------------------ LOAD MORE STUDENTS ------------------
+  const loadMoreStudents = async () => {
+    if (!hasMoreStudents || loadingMore || !paginationCursor) return;
+
+    setLoadingMore(true);
+    try {
+      // Fetch next page using cursor
+      const paginatedUrl = `${DB_URL}/StudentDirectory.json?orderBy="$key"&startAfter="${paginationCursor}"&limitToFirst=${PAGE_SIZE}`;
+      const response = await axios.get(paginatedUrl);
+      const newStudentsData = response.data || {};
+
+      if (Object.keys(newStudentsData).length === 0) {
+        setHasMoreStudents(false);
+        setLoadingMore(false);
+        return;
+      }
+
+      const newStudentList = Object.entries(newStudentsData).map(([studentId, student]) =>
+        normalizeStudentSummary(studentId, student)
+      );
+
+      // Update cursor
+      const studentKeys = Object.keys(newStudentsData);
+      if (studentKeys.length > 0) {
+        const lastKey = studentKeys[studentKeys.length - 1];
+        setPaginationCursor(lastKey);
+      }
+
+      // Check if there are more students
+      setHasMoreStudents(studentKeys.length >= PAGE_SIZE);
+
+      // Append to existing students
+      const updatedStudentList = [...students, ...newStudentList];
+      persistStudentList(updatedStudentList, gradeOptions, currentAcademicYear);
+
+      // Hydrate profile images in background
+      hydrateMissingStudentProfileImages(newStudentList).then((hydratedList) => {
+        const mergedList = updatedStudentList.map((student) => {
+          const hydrated = hydratedList.find((h) => h.studentId === student.studentId);
+          return hydrated || student;
+        });
+        persistStudentList(mergedList, gradeOptions, currentAcademicYear);
+      });
+    } catch (err) {
+      console.error("Error loading more students:", err);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const previousAcademicYearKey = useMemo(() => {
     const text = String(currentAcademicYear || "").trim();
@@ -2170,27 +2267,80 @@ function StudentsPage() {
                 {currentYearStudents.length === 0 ? (
                   <p style={{ width: contentWidth, maxWidth: "100%", textAlign: "center", color: "var(--text-muted)", margin: 0 }}>No current year students for this selection.</p>
                 ) : (
-                  currentYearStudents.map((s, i) => (
-                    <div
-                      key={`current-${s.studentId || s.userId || i}`}
-                      onClick={() => handleSelectStudent(s)}
-                      className="student-card"
-                      style={listCardStyle(selectedStudent?.studentId === s.studentId)}
+                  <>
+                    <FixedSizeList
+                      height={Math.min(600, currentYearStudents.length * 72)}
+                      itemCount={currentYearStudents.length}
+                      itemSize={72}
+                      width={contentWidth}
+                      style={{ maxWidth: "100%" }}
                     >
-                      <div style={{ display: "flex", alignItems: "center", gap: "12px", paddingRight: 110 }}>
-                        <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surface-accent)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 13, flex: "0 0 auto" }}>
-                          {i + 1}
-                        </div>
-                        <ProfileAvatar src={s.profileImage} name={s.name} alt={s.name} loading="lazy" style={{ width: "48px", height: "48px", borderRadius: "50%", border: selectedStudent?.studentId === s.studentId ? "3px solid var(--accent)" : "3px solid var(--border-soft)", objectFit: "cover", transition: "all 0.3s ease" }} />
-                        <div style={{ minWidth: 0 }}>
-                          <h3 style={{ margin: 0, fontSize: "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</h3>
-                          <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: 4 }}>
-                            Grade {s.grade} • Section {s.section}
+                      {({ index, style }) => {
+                        const s = currentYearStudents[index];
+                        return (
+                          <div style={{ ...style, padding: "6px 0" }}>
+                            <div
+                              key={`current-${s.studentId || s.userId || index}`}
+                              onClick={() => handleSelectStudent(s)}
+                              className="student-card"
+                              style={listCardStyle(selectedStudent?.studentId === s.studentId)}
+                            >
+                              <div style={{ display: "flex", alignItems: "center", gap: "12px", paddingRight: 110 }}>
+                                <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--surface-accent)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 13, flex: "0 0 auto" }}>
+                                  {index + 1}
+                                </div>
+                                <ProfileAvatar src={s.profileImage} name={s.name} alt={s.name} loading="lazy" style={{ width: "48px", height: "48px", borderRadius: "50%", border: selectedStudent?.studentId === s.studentId ? "3px solid var(--accent)" : "3px solid var(--border-soft)", objectFit: "cover", transition: "all 0.3s ease" }} />
+                                <div style={{ minWidth: 0 }}>
+                                  <h3 style={{ margin: 0, fontSize: "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</h3>
+                                  <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: 4 }}>
+                                    Grade {s.grade} • Section {s.section}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
                           </div>
-                        </div>
+                        );
+                      }}
+                    </FixedSizeList>
+                    
+                    {/* Load More Button */}
+                    {hasMoreStudents && !loadingMore && (
+                      <button
+                        onClick={loadMoreStudents}
+                        style={{
+                          width: contentWidth,
+                          maxWidth: "100%",
+                          padding: "12px 16px",
+                          background: "var(--accent-strong)",
+                          border: "none",
+                          borderRadius: "12px",
+                          color: "#fff",
+                          fontSize: "13px",
+                          fontWeight: 800,
+                          cursor: "pointer",
+                          transition: "all 0.2s ease",
+                          boxShadow: "var(--shadow-soft)",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = "var(--accent-hover)";
+                          e.currentTarget.style.transform = "scale(1.02)";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = "var(--accent-strong)";
+                          e.currentTarget.style.transform = "scale(1)";
+                        }}
+                      >
+                        Load More Students
+                      </button>
+                    )}
+                    
+                    {/* Loading More Indicator */}
+                    {loadingMore && (
+                      <div style={{ width: contentWidth, maxWidth: "100%", textAlign: "center", padding: "12px", color: "var(--text-muted)", fontSize: "13px" }}>
+                        Loading more students...
                       </div>
-                    </div>
-                  ))
+                    )}
+                  </>
                 )}
               </div>
             )}
