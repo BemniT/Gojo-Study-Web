@@ -15,9 +15,155 @@ import { FixedSizeList } from 'react-window';
 import app, { db, firestore } from "../firebase"; // Adjust the path if needed
 import { BACKEND_BASE } from "../config.js";
 import ProfileAvatar from "../components/ProfileAvatar";
-import { buildChatKeyCandidates, mapInBatches, uniqueNonEmptyValues } from "../utils/chatRtdb";
+import {
+  buildChatKeyCandidates,
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  buildOwnerChatSummariesPath,
+  normalizeChatSummaryValue,
+  uniqueNonEmptyValues,
+} from "../utils/chatRtdb";
 import { fetchCachedJson, readCachedJson, writeCachedJson } from "../utils/rtdbCache";
 import { schoolNodeBase } from "../utils/schoolDbRouting";
+
+const normalizeCourseToken = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+const buildGeneratedCourseId = (gradeValue, sectionValue, subjectToken) =>
+  `gm_${normalizeCourseToken(gradeValue)}_${normalizeCourseToken(sectionValue)}_${normalizeCourseToken(subjectToken)}`;
+
+const normalizeGradeSubjectEntries = (subjectsNode) => {
+  if (Array.isArray(subjectsNode)) {
+    return subjectsNode
+      .map((subjectItem) => {
+        if (!subjectItem) return null;
+        if (typeof subjectItem === "string") {
+          return { key: normalizeCourseToken(subjectItem), name: subjectItem };
+        }
+        if (typeof subjectItem === "object") {
+          const displayName = subjectItem.name || subjectItem.subject || subjectItem.code || "";
+          const subjectKey = normalizeCourseToken(subjectItem.key || subjectItem.id || displayName);
+          if (!subjectKey || !displayName) return null;
+          return { key: subjectKey, name: displayName };
+        }
+        return null;
+      })
+      .filter(Boolean);
+  }
+
+  if (subjectsNode && typeof subjectsNode === "object") {
+    return Object.entries(subjectsNode)
+      .map(([subjectKey, subjectValue]) => {
+        if (subjectValue && typeof subjectValue === "object") {
+          const displayName = subjectValue.name || subjectValue.subject || subjectKey;
+          return {
+            key: normalizeCourseToken(subjectKey || displayName),
+            name: displayName,
+          };
+        }
+        if (typeof subjectValue === "string") {
+          return {
+            key: normalizeCourseToken(subjectKey || subjectValue),
+            name: subjectValue,
+          };
+        }
+        return {
+          key: normalizeCourseToken(subjectKey),
+          name: subjectKey,
+        };
+      })
+      .filter((entry) => entry.key && entry.name);
+  }
+
+  return [];
+};
+
+const buildGradeSubjectsByGrade = (gradesNode) => {
+  const result = {};
+  const gradeEntries = Array.isArray(gradesNode)
+    ? gradesNode
+    : Object.entries(gradesNode || {}).map(([gradeKey, gradeValue]) => ({
+        grade: gradeValue?.grade ?? gradeKey,
+        ...(gradeValue && typeof gradeValue === "object" ? gradeValue : {}),
+      }));
+
+  gradeEntries.forEach((entry, index) => {
+    if (!entry || typeof entry !== "object") return;
+
+    const grade = String(entry.grade ?? (Array.isArray(gradesNode) ? String(index + 1) : "")).trim();
+    if (!grade) return;
+
+    const subjectMap = new Map();
+    normalizeGradeSubjectEntries(entry.subjects).forEach((subjectEntry) => {
+      subjectMap.set(normalizeCourseToken(subjectEntry.key || subjectEntry.name), subjectEntry);
+    });
+
+    const sectionSubjectTeachers =
+      entry.sectionSubjectTeachers && typeof entry.sectionSubjectTeachers === "object"
+        ? entry.sectionSubjectTeachers
+        : {};
+
+    Object.values(sectionSubjectTeachers).forEach((sectionNode) => {
+      Object.entries(sectionNode || {}).forEach(([subjectKey, assignment]) => {
+        const displayName =
+          assignment && typeof assignment === "object" && (assignment.subject || assignment.name)
+            ? assignment.subject || assignment.name
+            : subjectKey;
+        const token = normalizeCourseToken(
+          assignment && typeof assignment === "object"
+            ? assignment.key || assignment.id || displayName || subjectKey
+            : displayName || subjectKey
+        );
+        if (!token) return;
+        subjectMap.set(token, {
+          key: token,
+          name: String(displayName || subjectKey || "").trim(),
+        });
+      });
+    });
+
+    result[grade] = [...subjectMap.values()].filter((entry) => entry?.key);
+  });
+
+  return result;
+};
+
+const getStudentCourseIds = ({ student = {}, gradeSubjectsByGrade = {} } = {}) => {
+  const grade = String(student?.grade || student?.basicStudentInformation?.grade || "").trim();
+  const section = String(student?.section || student?.secation || student?.basicStudentInformation?.section || "").trim().toUpperCase();
+  if (!grade || !section) return [];
+
+  return [...new Set(
+    (gradeSubjectsByGrade[grade] || [])
+      .map((subjectEntry) => buildGeneratedCourseId(grade, section, subjectEntry?.key || subjectEntry?.name))
+      .filter(Boolean)
+  )];
+};
+
+const findStudentScopedNode = (records = {}, student = {}) => {
+  const candidateKeys = new Set(uniqueNonEmptyValues([
+    student?.studentId,
+    student?.userId,
+    student?.userId ? `student_${student.userId}` : "",
+  ]));
+
+  for (const candidate of candidateKeys) {
+    if (records?.[candidate]) {
+      return records[candidate];
+    }
+  }
+
+  return Object.values(records || {}).find(
+    (record) =>
+      record &&
+      typeof record === "object" &&
+      (candidateKeys.has(String(record.userId || "").trim()) || candidateKeys.has(String(record.studentId || "").trim()))
+  ) || null;
+};
 
 
 function StudentsPage() {
@@ -50,9 +196,14 @@ function StudentsPage() {
   const PAGE_SIZE = 50;
   const [currentAcademicYear, setCurrentAcademicYear] = useState("");
   const [gradeOptions, setGradeOptions] = useState([]);
+<<<<<<< HEAD
   
   // React Query client for cache management
   const queryClient = useQueryClient();
+=======
+  const [gradeSubjectsByGrade, setGradeSubjectsByGrade] = useState({});
+  const [gradeSubjectsLoaded, setGradeSubjectsLoaded] = useState(false);
+>>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
   const [unreadMap, setUnreadMap] = useState({});
   const [editingProfile, setEditingProfile] = useState(false);
   const [editForm, setEditForm] = useState({});
@@ -98,13 +249,13 @@ function StudentsPage() {
     try {
       const payload = { isActive: newActive };
       if (selectedStudent.studentId) {
-        await axios.patch(`${DB_URL}/Students/${selectedStudent.studentId}.json`, payload);
+        await patchSchoolNodeApi(`Students/${selectedStudent.studentId}`, payload);
       }
       if (selectedStudent.userId) {
-        await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, payload);
+        await patchSchoolNodeApi(`Users/${selectedStudent.userId}`, payload);
       }
       if (selectedStudent.studentId) {
-        await axios.patch(`${DB_URL}/StudentDirectory/${selectedStudent.studentId}.json`, payload).catch(() => undefined);
+        await patchSchoolNodeApi(`StudentDirectory/${selectedStudent.studentId}`, payload).catch(() => undefined);
         writeStudentDirectoryEntryToCache(selectedStudent.studentId, (previousEntry) => ({
           ...previousEntry,
           ...payload,
@@ -160,9 +311,52 @@ function StudentsPage() {
     return getStoredAuth().data || {};
   })();
 
-  const schoolCode = _storedFinance.schoolCode || "";
-  const DB_URL = schoolNodeBase(schoolCode);
-  const STUDENTS_CACHE_KEY = `students_page_cache_${schoolCode || "global"}`;
+  const initialSchoolCode = _storedFinance.schoolCode || "";
+  const DB_URL = schoolNodeBase(initialSchoolCode);
+  const readSchoolNodeApi = async (path, fallbackValue = {}) => {
+    const effectiveSchoolCode = String(finance?.schoolCode || initialSchoolCode || "").trim();
+    if (!effectiveSchoolCode) {
+      return fallbackValue;
+    }
+    try {
+      const response = await axios.get(`${API_BASE}/school-node-read`, {
+        params: { schoolCode: effectiveSchoolCode, path },
+        timeout: 12000,
+      });
+      const data = response?.data?.data;
+      return data === null || data === undefined ? fallbackValue : data;
+    } catch {
+      return fallbackValue;
+    }
+  };
+  const patchSchoolNodeApi = async (path, patchValue = {}) => {
+    const effectiveSchoolCode = String(finance?.schoolCode || initialSchoolCode || "").trim();
+    if (!effectiveSchoolCode) {
+      throw new Error("Missing schoolCode");
+    }
+    const currentValue = await readSchoolNodeApi(path, {});
+    const baseValue =
+      currentValue && typeof currentValue === "object" && !Array.isArray(currentValue)
+        ? currentValue
+        : {};
+    const nextValue = {
+      ...baseValue,
+      ...(patchValue || {}),
+    };
+
+    await axios.put(
+      `${API_BASE}/school-node`,
+      {
+        schoolCode: effectiveSchoolCode,
+        path,
+        value: nextValue,
+      },
+      { timeout: 12000 }
+    );
+
+    return nextValue;
+  };
+  const STUDENTS_CACHE_KEY = `students_page_cache_${initialSchoolCode || "global"}`;
   const STUDENT_DIRECTORY_URL = `${DB_URL}/StudentDirectory.json`;
 
   const readStudentsCache = () => {
@@ -247,6 +441,7 @@ function StudentsPage() {
 
   const adminId = admin?.adminId || admin?.userId || null;
   const adminUserId = admin?.userId || null;
+  const activeSchoolCode = String(finance?.schoolCode || initialSchoolCode || "").trim();
 
   const [loadingFinance, setLoadingFinance] = useState(true);
   // LOAD FINANCE/ADMIN FROM LOCALSTORAGE (restored)
@@ -268,14 +463,14 @@ function StudentsPage() {
       if (financeKey) {
         let res = null;
         try {
-          res = (await axios.get(`${DB_URL}/Finance/${financeKey}.json`)) || null;
+          res = { data: await readSchoolNodeApi(`Finance/${financeKey}`, null) };
         } catch (err) {
           res = null;
         }
 
         if (!res || !res.data) {
           try {
-            res = (await axios.get(`${DB_URL}/Academics/${financeKey}.json`)) || null;
+            res = { data: await readSchoolNodeApi(`Academics/${financeKey}`, null) };
           } catch (err) {
             res = null;
           }
@@ -287,7 +482,7 @@ function StudentsPage() {
 
           if (userId) {
             try {
-              const userRes = await axios.get(`${DB_URL}/Users/${userId}.json`);
+              const userRes = { data: await readSchoolNodeApi(`Users/${userId}`, {}) };
               const nextFinance = {
                 financeId: financeKey,
                 userId,
@@ -324,7 +519,7 @@ function StudentsPage() {
 
       if (possibleUserId) {
         try {
-          const userRes = await axios.get(`${DB_URL}/Users/${possibleUserId}.json`);
+          const userRes = { data: await readSchoolNodeApi(`Users/${possibleUserId}`, {}) };
           const nextFinance = {
             financeId: financeData.financeId || financeData.adminId || "",
             userId: possibleUserId,
@@ -450,20 +645,14 @@ function StudentsPage() {
 
       let userRecord = {};
       if (studentItem?.userId) {
-        userRecord = await fetchCachedJson(`${DB_URL}/Users/${studentItem.userId}.json`, {
-          ttlMs: BIG_NODE_CACHE_TTL_MS,
-          fallbackValue: {},
-        });
+        userRecord = await readSchoolNodeApi(`Users/${studentItem.userId}`, {});
       }
 
       let nextProfileImage = getSafeImage(userRecord?.profileImage, studentItem?.profileImage);
       let studentRecord = {};
 
       if (!hasDatabaseProfileImage(nextProfileImage) && studentItem?.studentId) {
-        studentRecord = await fetchCachedJson(`${DB_URL}/Students/${studentItem.studentId}.json`, {
-          ttlMs: BIG_NODE_CACHE_TTL_MS,
-          fallbackValue: {},
-        });
+        studentRecord = await readSchoolNodeApi(`Students/${studentItem.studentId}`, {});
 
         nextProfileImage = getSafeImage(
           studentRecord?.profileImage,
@@ -495,6 +684,27 @@ function StudentsPage() {
     studentLike?.id,
   ]);
 
+  const findStudentSummary = (ownerSummaries, studentLike = {}) => {
+    const studentKeys = new Set(
+      getStudentIdentityCandidates(studentLike).map((studentKey) => String(studentKey || "").trim().toLowerCase())
+    );
+
+    let matchedSummary = null;
+    Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {}).forEach(([chatId, summaryValue]) => {
+      const summary = normalizeChatSummaryValue(summaryValue, { chatId });
+      const otherUserId = String(summary.otherUserId || "").trim().toLowerCase();
+      if (!otherUserId || !studentKeys.has(otherUserId)) {
+        return;
+      }
+
+      if (!matchedSummary || summary.lastMessageTime >= matchedSummary.lastMessageTime) {
+        matchedSummary = summary;
+      }
+    });
+
+    return matchedSummary;
+  };
+
   const findExistingChatKey = (chatKeySet, currentUserCandidates, otherUserCandidates) => {
     if (!(chatKeySet instanceof Set)) {
       return "";
@@ -515,6 +725,15 @@ function StudentsPage() {
   };
 
   const resolveStudentChatKey = async (studentLike = {}) => {
+    const ownerSummaries = await fetchCachedJson(`${DB_URL}/${buildOwnerChatSummariesPath(adminUserId)}.json`, {
+      ttlMs: 30 * 1000,
+      fallbackValue: {},
+    });
+    const existingSummary = findStudentSummary(ownerSummaries, studentLike);
+    if (existingSummary?.chatId) {
+      return existingSummary.chatId;
+    }
+
     const chatIndex = await fetchCachedJson(`${DB_URL}/Chats.json?shallow=true`, {
       ttlMs: CHAT_INDEX_CACHE_TTL_MS,
       fallbackValue: {},
@@ -534,6 +753,10 @@ function StudentsPage() {
   };
 
   const [studentMarks, setStudentMarks] = useState({});
+  const selectedStudentCourseIds = useMemo(
+    () => getStudentCourseIds({ student: selectedStudent, gradeSubjectsByGrade }),
+    [gradeSubjectsByGrade, selectedStudent?.grade, selectedStudent?.section, selectedStudent?.secation]
+  );
   const studentMarksFlattened = useMemo(() => {
     const src = studentMarks || {};
     const out = {};
@@ -597,6 +820,10 @@ function StudentsPage() {
   }, []);
 
   useEffect(() => {
+    if (loadingFinance || !activeSchoolCode) {
+      return undefined;
+    }
+
     let cancelled = false;
     const cached = readStudentsCache();
     if (!cached) return undefined;
@@ -648,7 +875,7 @@ function StudentsPage() {
 
     const refreshUser = async () => {
       try {
-        const res = await axios.get(`${DB_URL}/Users/${finance.userId}.json`);
+        const res = { data: await readSchoolNodeApi(`Users/${finance.userId}`, {}) };
         if (cancelled) return;
         const user = res.data || {};
         setFinance((prev) => ({
@@ -683,16 +910,10 @@ function StudentsPage() {
     try {
       const [user, rtStudent] = await Promise.all([
         s.userId
-          ? fetchCachedJson(`${DB_URL}/Users/${s.userId}.json`, {
-              ttlMs: BIG_NODE_CACHE_TTL_MS,
-              fallbackValue: {},
-            })
+          ? readSchoolNodeApi(`Users/${s.userId}`, {})
           : Promise.resolve({}),
         s.studentId
-          ? fetchCachedJson(`${DB_URL}/Students/${s.studentId}.json`, {
-              ttlMs: BIG_NODE_CACHE_TTL_MS,
-              fallbackValue: {},
-            })
+          ? readSchoolNodeApi(`Students/${s.studentId}`, {})
           : Promise.resolve({}),
       ]);
 
@@ -718,19 +939,13 @@ function StudentsPage() {
       const parentIds = rtStudent?.parents ? Object.keys(rtStudent.parents) : (s.parents ? Object.keys(s.parents) : []);
       const parentsList = (await mapInBatches(parentIds, 4, async (parentId) => {
         try {
-          const parentNode = await fetchCachedJson(`${DB_URL}/Parents/${parentId}.json`, {
-            ttlMs: BIG_NODE_CACHE_TTL_MS,
-            fallbackValue: {},
-          });
+          const parentNode = await readSchoolNodeApi(`Parents/${parentId}`, {});
           const parentUserId = String(parentNode?.userId || "").trim();
           if (!parentUserId) {
             return null;
           }
 
-          const parentUser = await fetchCachedJson(`${DB_URL}/Users/${parentUserId}.json`, {
-            ttlMs: BIG_NODE_CACHE_TTL_MS,
-            fallbackValue: {},
-          });
+          const parentUser = await readSchoolNodeApi(`Users/${parentUserId}`, {});
 
           return {
             parentId,
@@ -808,7 +1023,7 @@ function StudentsPage() {
       // Primary: if we have a RTDB studentId, update the Realtime DB directly
       if (selectedStudent.studentId) {
         // PATCH the Students node
-        await axios.patch(`${DB_URL}/Students/${selectedStudent.studentId}.json`, payload);
+        await patchSchoolNodeApi(`Students/${selectedStudent.studentId}`, payload);
 
         // Also update Users node when userId exists (keep profile in sync)
         if (selectedStudent.userId) {
@@ -817,11 +1032,11 @@ function StudentsPage() {
             if (typeof payload[k] !== "undefined") userPayload[k] = payload[k];
           });
           if (Object.keys(userPayload).length > 0) {
-            await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, userPayload);
+            await patchSchoolNodeApi(`Users/${selectedStudent.userId}`, userPayload);
           }
         }
 
-        await axios.patch(`${DB_URL}/StudentDirectory/${selectedStudent.studentId}.json`, studentDirectoryPayload).catch(() => undefined);
+        await patchSchoolNodeApi(`StudentDirectory/${selectedStudent.studentId}`, studentDirectoryPayload).catch(() => undefined);
         writeStudentDirectoryEntryToCache(selectedStudent.studentId, (previousEntry) => ({
           ...previousEntry,
           ...studentDirectoryPayload,
@@ -845,7 +1060,7 @@ function StudentsPage() {
 
       // Secondary: if we have only a userId, update Users node
       if (selectedStudent.userId) {
-        await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, payload);
+        await patchSchoolNodeApi(`Users/${selectedStudent.userId}`, payload);
         const updated = { ...(selectedStudent || {}), ...(payload || {}) };
         setSelectedStudent(updated);
         setStudents((prev) => {
@@ -901,10 +1116,56 @@ function StudentsPage() {
 
 
 
+<<<<<<< HEAD
   // ------------------ FETCH STUDENTS (PAGINATED WITH REACT QUERY) ------------------
   const { data: reactQueryStudents, isLoading: isStudentsQueryLoading, refetch: refetchStudents } = useQuery({
     queryKey: ['students', schoolCode],
     queryFn: async () => {
+=======
+  useEffect(() => {
+    let cancelled = false;
+
+    setGradeSubjectsLoaded(false);
+
+    const loadGradeSubjects = async () => {
+      try {
+        const gradesData = await readSchoolNodeApi("GradeManagement/grades", {});
+
+        if (!cancelled) {
+          setGradeSubjectsByGrade(buildGradeSubjectsByGrade(gradesData));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setGradeSubjectsByGrade({});
+        }
+      } finally {
+        if (!cancelled) {
+          setGradeSubjectsLoaded(true);
+        }
+      }
+    };
+
+    loadGradeSubjects();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [BIG_NODE_CACHE_TTL_MS, activeSchoolCode, loadingFinance]);
+
+  // ------------------ FETCH STUDENTS ------------------
+  useEffect(() => {
+    if (loadingFinance) {
+      return;
+    }
+
+    if (!activeSchoolCode) {
+      setStudents([]);
+      setStudentsLoading(false);
+      return;
+    }
+
+    const fetchStudents = async () => {
+>>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
       const cached = readStudentsCache();
       if (cached && Array.isArray(cached.studentList)) {
         setGradeOptions(Array.isArray(cached.gradeOptions) ? cached.gradeOptions : []);
@@ -918,6 +1179,7 @@ function StudentsPage() {
       }
 
       try {
+<<<<<<< HEAD
         const [schoolInfoData, gradesData] = await Promise.all([
           fetchCachedJson(`${DB_URL}/schoolInfo.json`, {
             ttlMs: BIG_NODE_CACHE_TTL_MS,
@@ -927,11 +1189,17 @@ function StudentsPage() {
             ttlMs: BIG_NODE_CACHE_TTL_MS,
             fallbackValue: {},
           }),
+=======
+        const [schoolInfoData, gradesData, studentDirectoryData] = await Promise.all([
+          readSchoolNodeApi("schoolInfo", {}),
+          readSchoolNodeApi("GradeManagement/grades", {}),
+          readSchoolNodeApi("StudentDirectory", {}),
+>>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
         ]);
         const activeAcademicYear = (schoolInfoData || {}).currentAcademicYear || "";
         setCurrentAcademicYear(activeAcademicYear);
 
-        const managedGrades = Object.keys(gradesData)
+        const managedGrades = Object.keys(gradesData || {})
           .filter((gradeKey) => isValidGradeKey(gradeKey))
           .sort((a, b) => Number(a) - Number(b));
         setGradeOptions(managedGrades);
@@ -970,6 +1238,7 @@ function StudentsPage() {
           return directoryStudentList;
         }
 
+<<<<<<< HEAD
         // Fallback: If StudentDirectory is empty, fetch from Students node (paginated)
         const studentsPaginatedUrl = `${DB_URL}/Students.json?orderBy="$key"&limitToFirst=${PAGE_SIZE}`;
         const studentsResponse = await axios.get(studentsPaginatedUrl);
@@ -982,17 +1251,31 @@ function StudentsPage() {
         }
         
         setHasMoreStudents(studentKeys2.length >= PAGE_SIZE);
+=======
+        const studentsData = await readSchoolNodeApi("Students", {});
+
+        const studentKeys = Object.keys(studentsData || {});
+>>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
 
         const baseStudentList = studentKeys2.map((id) => normalizeStudentSummary(id, studentsData[id]));
 
         setStudentsLoading(false);
         persistStudentList(baseStudentList, managedGrades, activeAcademicYear);
 
+<<<<<<< HEAD
         // Hydrate with user data in background
         const usersData = readCachedJson(`${DB_URL}/Users.json`, {
           ttlMs: BIG_NODE_CACHE_TTL_MS,
         });
         if (usersData && typeof usersData === "object") {
+=======
+        try {
+          const usersData = await readSchoolNodeApi("Users", {});
+          if (!usersData || typeof usersData !== "object") {
+            return;
+          }
+
+>>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
           const hydratedStudentList = baseStudentList.map((student) => {
             const user = usersData[student.userId] || {};
             return {
@@ -1035,6 +1318,7 @@ function StudentsPage() {
     setStudentsLoading(isStudentsQueryLoading);
   }, [isStudentsQueryLoading]);
 
+<<<<<<< HEAD
   // ------------------ LOAD MORE STUDENTS ------------------
   const loadMoreStudents = async () => {
     if (!hasMoreStudents || loadingMore || !paginationCursor) return;
@@ -1084,6 +1368,10 @@ function StudentsPage() {
       setLoadingMore(false);
     }
   };
+=======
+    fetchStudents();
+  }, [activeSchoolCode, loadingFinance]);
+>>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
 
   const previousAcademicYearKey = useMemo(() => {
     const text = String(currentAcademicYear || "").trim();
@@ -1148,27 +1436,45 @@ function StudentsPage() {
       return;
     }
 
+    if (!gradeSubjectsLoaded) {
+      return undefined;
+    }
+
     let cancelled = false;
 
     async function fetchMarks() {
       try {
-        const classMarks = await fetchCachedJson(`${DB_URL}/ClassMarks.json`, {
-          ttlMs: 2 * 60 * 1000,
-          fallbackValue: {},
-        });
-
         const marksObj = {};
-        Object.entries(classMarks || {}).forEach(([courseId, students]) => {
-          // Try direct key
-          if (students?.[selectedStudent.studentId]) {
-            marksObj[courseId] = students[selectedStudent.studentId];
-            return;
-          }
+        if (selectedStudentCourseIds.length > 0) {
+          const courseMarkEntries = await Promise.all(
+            selectedStudentCourseIds.map(async (courseId) => {
+              const courseMarks = await fetchCachedJson(`${DB_URL}/ClassMarks/${encodeURIComponent(courseId)}.json`, {
+                ttlMs: BIG_NODE_CACHE_TTL_MS,
+                fallbackValue: {},
+              });
+              return [courseId, courseMarks];
+            })
+          );
 
-          // Fallback: try to find by userId inside student nodes
-          const found = Object.values(students || {}).find(s => s && (s.userId === selectedStudent.userId || s.studentId === selectedStudent.studentId));
-          if (found) marksObj[courseId] = found;
-        });
+          courseMarkEntries.forEach(([courseId, courseMarks]) => {
+            const found = findStudentScopedNode(courseMarks, selectedStudent);
+            if (found) {
+              marksObj[courseId] = found;
+            }
+          });
+        } else {
+          const classMarks = await fetchCachedJson(`${DB_URL}/ClassMarks.json`, {
+            ttlMs: BIG_NODE_CACHE_TTL_MS,
+            fallbackValue: {},
+          });
+
+          Object.entries(classMarks || {}).forEach(([courseId, students]) => {
+            const found = findStudentScopedNode(students, selectedStudent);
+            if (found) {
+              marksObj[courseId] = found;
+            }
+          });
+        }
 
         if (!cancelled) {
           setStudentMarks(marksObj);
@@ -1184,36 +1490,68 @@ function StudentsPage() {
     return () => {
       cancelled = true;
     };
-  }, [DB_URL, selectedStudent?.studentId, selectedStudent?.userId, studentTab]);
+  }, [BIG_NODE_CACHE_TTL_MS, DB_URL, gradeSubjectsLoaded, selectedStudent?.studentId, selectedStudent?.userId, selectedStudentCourseIds, studentTab]);
 
   useEffect(() => {
-    if (studentTab !== "attendance" || !selectedStudent?.studentId) return;
+    if (studentTab !== "attendance" || !selectedStudent?.studentId) return undefined;
+
+    if (!gradeSubjectsLoaded) {
+      return undefined;
+    }
 
     let cancelled = false;
 
     const fetchAttendanceData = async () => {
       try {
-        const attendanceRaw = await fetchCachedJson(`${DB_URL}/Attendance.json`, {
-          ttlMs: 2 * 60 * 1000,
-          fallbackValue: {},
-        });
-
         const attendanceData = [];
-        Object.entries(attendanceRaw || {}).forEach(([courseId, datesObj]) => {
-          Object.entries(datesObj || {}).forEach(([date, studentsObj]) => {
-            const status = studentsObj?.[selectedStudent.studentId];
-            if (!status) {
-              return;
-            }
+        if (selectedStudentCourseIds.length > 0) {
+          const attendanceEntries = await Promise.all(
+            selectedStudentCourseIds.map(async (courseId) => {
+              const courseAttendance = await fetchCachedJson(`${DB_URL}/Attendance/${encodeURIComponent(courseId)}.json`, {
+                ttlMs: BIG_NODE_CACHE_TTL_MS,
+                fallbackValue: {},
+              });
+              return [courseId, courseAttendance];
+            })
+          );
 
-            attendanceData.push({
-              courseId,
-              date,
-              status,
-              teacherName: studentsObj?.[selectedStudent.studentId]?.teacherName || "Teacher",
+          attendanceEntries.forEach(([courseId, datesObj]) => {
+            Object.entries(datesObj || {}).forEach(([date, studentsObj]) => {
+              const status = studentsObj?.[selectedStudent.studentId];
+              if (!status) {
+                return;
+              }
+
+              attendanceData.push({
+                courseId,
+                date,
+                status,
+                teacherName: studentsObj?.[selectedStudent.studentId]?.teacherName || "Teacher",
+              });
             });
           });
-        });
+        } else {
+          const attendanceRaw = await fetchCachedJson(`${DB_URL}/Attendance.json`, {
+            ttlMs: BIG_NODE_CACHE_TTL_MS,
+            fallbackValue: {},
+          });
+
+          Object.entries(attendanceRaw || {}).forEach(([courseId, datesObj]) => {
+            Object.entries(datesObj || {}).forEach(([date, studentsObj]) => {
+              const status = studentsObj?.[selectedStudent.studentId];
+              if (!status) {
+                return;
+              }
+
+              attendanceData.push({
+                courseId,
+                date,
+                status,
+                teacherName: studentsObj?.[selectedStudent.studentId]?.teacherName || "Teacher",
+              });
+            });
+          });
+        }
 
         if (cancelled) {
           return;
@@ -1242,7 +1580,7 @@ function StudentsPage() {
     return () => {
       cancelled = true;
     };
-  }, [DB_URL, selectedStudent?.studentId, selectedStudent?.userId, studentTab]);
+  }, [BIG_NODE_CACHE_TTL_MS, DB_URL, gradeSubjectsLoaded, selectedStudent?.studentId, selectedStudent?.userId, selectedStudentCourseIds, studentTab]);
 
   useEffect(() => {
     if (studentTab !== "payment" || !selectedStudent) return;
@@ -1278,27 +1616,17 @@ function StudentsPage() {
   //-------------------------Fetch unread status for each student--------------
   useEffect(() => {
     const fetchUnread = async () => {
-      const chatIndex = await fetchCachedJson(`${DB_URL}/Chats.json?shallow=true`, {
-        ttlMs: CHAT_INDEX_CACHE_TTL_MS,
+      const ownerSummaries = await fetchCachedJson(`${DB_URL}/${buildOwnerChatSummariesPath(adminUserId)}.json`, {
+        ttlMs: 30 * 1000,
         fallbackValue: {},
       });
-      const chatKeySet = new Set(Object.keys(chatIndex || {}));
-      const currentUserCandidates = uniqueNonEmptyValues([adminUserId, adminId]);
-      const unreadEntries = await mapInBatches(students, 10, async (studentItem) => {
+      const unreadEntries = students.map((studentItem) => {
         const studentKeys = getStudentIdentityCandidates(studentItem);
-        const chatKey = findExistingChatKey(chatKeySet, currentUserCandidates, studentKeys);
-        if (!chatKey) {
-          return { studentKeys, hasUnread: false };
-        }
-
-        const unreadCount = await fetchCachedJson(`${DB_URL}/Chats/${chatKey}/unread/${adminUserId}.json`, {
-          ttlMs: 30 * 1000,
-          fallbackValue: 0,
-        });
+        const summary = findStudentSummary(ownerSummaries, studentItem);
 
         return {
           studentKeys,
-          hasUnread: Number(unreadCount || 0) > 0,
+          hasUnread: Number(summary?.unreadCount || 0) > 0,
         };
       });
 
@@ -1357,43 +1685,71 @@ function StudentsPage() {
 
       const generatedId = pushRes.data && pushRes.data.name;
 
-      // 2) update lastMessage + participants
-      const lastMessage = {
-        text: newMessage.text,
-        senderId: newMessage.senderId,
-        seen: false,
-        timeStamp: newMessage.timeStamp,
-      };
-
       await axios.patch(
         `${DB_URL}/Chats/${chatKey}.json`,
         {
           participants: {
-            ...(/* keep existing participants if any */ {}),
             [adminUserId]: true,
             [selectedStudent.userId]: true,
           },
-          lastMessage,
         }
       );
 
-      // 3) increment unread for receiver
+      await Promise.all([
+        axios.patch(
+          `${DB_URL}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: selectedStudent.userId,
+            unreadCount: 0,
+            lastMessageText: newMessage.text || "",
+            lastMessageType: newMessage.type || "text",
+            lastMessageTime: newMessage.timeStamp,
+            lastSenderId: adminUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+        axios.patch(
+          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: adminUserId,
+            lastMessageText: newMessage.text || "",
+            lastMessageType: newMessage.type || "text",
+            lastMessageTime: newMessage.timeStamp,
+            lastSenderId: adminUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+      ]).catch(() => {});
+
+      // 3) increment unread for receiver summary
       try {
-        const unread = await fetchCachedJson(`${DB_URL}/Chats/${chatKey}/unread.json`, {
-          ttlMs: 10 * 1000,
-          fallbackValue: {},
-          force: true,
+        const summaryRes = await axios.get(
+          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`
+        );
+        const summary = normalizeChatSummaryValue(summaryRes.data, {
+          chatId: chatKey,
+          otherUserId: adminUserId,
         });
-        const prev = Number(unread[selectedStudent.userId] || 0);
-        const updated = { ...(unread || {}), [selectedStudent.userId]: prev + 1, [adminUserId]: Number(unread[adminUserId] || 0) };
-        await axios.put(
-          `${DB_URL}/Chats/${chatKey}/unread.json`,
-          updated
+        await axios.patch(
+          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: adminUserId,
+            unreadCount: Number(summary.unreadCount || 0) + 1,
+          })
         );
       } catch (uErr) {
-        await axios.put(
-          `${DB_URL}/Chats/${chatKey}/unread.json`,
-          { [selectedStudent.userId]: 1, [adminUserId]: 0 }
+        await axios.patch(
+          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: adminUserId,
+            unreadCount: 1,
+          })
         );
       }
 
@@ -1443,28 +1799,69 @@ function StudentsPage() {
 
         const generatedId = pushRes.data && pushRes.data.name;
 
-        // patch lastMessage + participants
-        const lastMessage = { text: newMessage.text, senderId: newMessage.senderId, seen: false, timeStamp: newMessage.timeStamp };
         await axios.patch(
           `${DB_URL}/Chats/${chatKey}.json`,
           {
             participants: { [adminUserId]: true, [selectedStudent.userId]: true },
-            lastMessage,
           }
         );
 
-        // update unread
+        await Promise.all([
+          axios.patch(
+            `${DB_URL}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
+            buildChatSummaryUpdate({
+              chatId: chatKey,
+              otherUserId: selectedStudent.userId,
+              unreadCount: 0,
+              lastMessageText: newMessage.text || "",
+              lastMessageType: newMessage.type || "text",
+              lastMessageTime: newMessage.timeStamp,
+              lastSenderId: adminUserId,
+              lastMessageSeen: false,
+              lastMessageSeenAt: null,
+            })
+          ),
+          axios.patch(
+            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+            buildChatSummaryUpdate({
+              chatId: chatKey,
+              otherUserId: adminUserId,
+              lastMessageText: newMessage.text || "",
+              lastMessageType: newMessage.type || "text",
+              lastMessageTime: newMessage.timeStamp,
+              lastSenderId: adminUserId,
+              lastMessageSeen: false,
+              lastMessageSeenAt: null,
+            })
+          ),
+        ]).catch(() => {});
+
+        // update receiver unread summary
         try {
-          const unread = await fetchCachedJson(`${DB_URL}/Chats/${chatKey}/unread.json`, {
-            ttlMs: 10 * 1000,
-            fallbackValue: {},
-            force: true,
+          const summaryRes = await axios.get(
+            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`
+          );
+          const summary = normalizeChatSummaryValue(summaryRes.data, {
+            chatId: chatKey,
+            otherUserId: adminUserId,
           });
-          const prev = Number(unread[selectedStudent.userId] || 0);
-          const updated = { ...(unread || {}), [selectedStudent.userId]: prev + 1, [adminUserId]: Number(unread[adminUserId] || 0) };
-          await axios.put(`${DB_URL}/Chats/${chatKey}/unread.json`, updated);
+          await axios.patch(
+            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+            buildChatSummaryUpdate({
+              chatId: chatKey,
+              otherUserId: adminUserId,
+              unreadCount: Number(summary.unreadCount || 0) + 1,
+            })
+          );
         } catch (uErr) {
-          await axios.put(`${DB_URL}/Chats/${chatKey}/unread.json`, { [selectedStudent.userId]: 1, [adminUserId]: 0 });
+          await axios.patch(
+            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
+            buildChatSummaryUpdate({
+              chatId: chatKey,
+              otherUserId: adminUserId,
+              unreadCount: 1,
+            })
+          );
         }
 
         setPopupMessages(prev => [...prev, { messageId: generatedId || `${Date.now()}`, ...newMessage, sender: 'admin' }]);
@@ -1527,6 +1924,9 @@ function StudentsPage() {
         setPopupMessages(list);
 
         const updates = {};
+        const hasUnseenIncomingMessages = Object.values(data).some(
+          (msg) => msg && msg.receiverId === adminUserId && !msg.seen
+        );
         Object.entries(data).forEach(([msgId, msg]) => {
           if (msg && msg.receiverId === adminUserId && !msg.seen) {
             updates[`Chats/${chatKey}/messages/${msgId}/seen`] = true;
@@ -1536,11 +1936,33 @@ function StudentsPage() {
         if (Object.keys(updates).length > 0) {
           try {
             await axios.patch(`${DB_URL}/.json`, updates);
-            axios.patch(`${DB_URL}/Chats/${chatKey}.json`, { unread: { [adminUserId]: 0 }, lastMessage: { seen: true } }).catch(() => {});
           } catch (err) {
             console.error('Failed to patch seen updates:', err);
           }
         }
+
+        axios.patch(
+          `${DB_URL}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: selectedStudent.userId,
+            unreadCount: 0,
+            ...(hasUnseenIncomingMessages
+              ? {
+                  lastMessageSeen: true,
+                  lastMessageSeenAt: Date.now(),
+                }
+              : {}),
+          })
+        ).catch(() => {});
+
+        setUnreadMap((previousMap) => {
+          const nextMap = { ...previousMap };
+          getStudentIdentityCandidates(selectedStudent).forEach((studentKey) => {
+            nextMap[studentKey] = false;
+          });
+          return nextMap;
+        });
       });
     };
 
@@ -1927,7 +2349,7 @@ function StudentsPage() {
         ...normalizedAdditional,
       };
 
-      await axios.patch(`${DB_URL}/Students/${selectedStudent.studentId}.json`, studentPayload);
+      await patchSchoolNodeApi(`Students/${selectedStudent.studentId}`, studentPayload);
 
       if (selectedStudent.userId) {
         const userPayload = {};
@@ -1958,7 +2380,7 @@ function StudentsPage() {
         }
 
         if (Object.keys(userPayload).length > 0) {
-          await axios.patch(`${DB_URL}/Users/${selectedStudent.userId}.json`, userPayload);
+          await patchSchoolNodeApi(`Users/${selectedStudent.userId}`, userPayload);
         }
       }
 

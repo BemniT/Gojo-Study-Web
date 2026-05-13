@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import { schoolNodeBase } from "../utils/schoolDbRouting";
+import { BACKEND_BASE } from "../config";
 
-const GRADE_CACHE_TTL_MS = 45 * 1000;
-const TEACHER_CACHE_TTL_MS = 45 * 1000;
+const GRADE_CACHE_TTL_MS = 15 * 60 * 1000;
+const TEACHER_CACHE_TTL_MS = 15 * 60 * 1000;
 
 const readSessionCache = (key, ttlMs) => {
   try {
@@ -39,7 +39,7 @@ export default function SubjectManagementPage() {
   const ACCENT = "#00B6A9";
 
   const schoolCode = String(admin.schoolCode || "").trim();
-  const SCHOOL_DB_ROOT = schoolNodeBase(schoolCode);
+  const API_BASE = `${BACKEND_BASE}/api`;
   const GRADE_CACHE_KEY = schoolCode
     ? `gojo_admin_grade_section_grades_v2:${schoolCode}`
     : "gojo_admin_grade_section_grades_v2";
@@ -60,20 +60,12 @@ export default function SubjectManagementPage() {
   const [assignMessageByTarget, setAssignMessageByTarget] = useState({});
   const [expandedByGrade, setExpandedByGrade] = useState({});
 
-  const getSchoolNodeUrl = (nodeName) => `${SCHOOL_DB_ROOT}/${nodeName}.json`;
-  const getSchoolPathUrl = (path) => `${SCHOOL_DB_ROOT}/${path}.json`;
-
-  const readSchoolNode = async (nodeName) => {
-    try {
-      const schoolRes = await axios.get(getSchoolNodeUrl(nodeName));
-      return schoolRes.data ?? {};
-    } catch (readError) {
-      return {};
-    }
-  };
-
   const putNodeWithFallback = async (path, payload) => {
-    await axios.put(getSchoolPathUrl(path), payload);
+    await axios.put(`${API_BASE}/school-node`, {
+      schoolCode,
+      path,
+      value: payload,
+    });
   };
 
   const normalizeSubjects = (subjectsNode) => {
@@ -222,30 +214,22 @@ export default function SubjectManagementPage() {
     });
   };
 
-  const normalizeTeacherList = (teachersNode, usersNode) => {
-    const users = usersNode && typeof usersNode === "object" ? usersNode : {};
-    const teachersRaw = teachersNode && typeof teachersNode === "object" ? teachersNode : {};
+  const normalizeTeacherList = (directoryNode) => {
+    const dir = directoryNode && typeof directoryNode === "object" ? directoryNode : {};
 
-    return Object.entries(teachersRaw)
-      .map(([teacherRecordKey, teacherValue]) => {
-        const row = teacherValue && typeof teacherValue === "object" ? teacherValue : {};
-        const user = users[row.userId] || {};
-        const teacherId = String(row.teacherId || teacherRecordKey || "").trim();
-        const name = String(user.name || teacherId || "Teacher").trim();
-
+    return Object.entries(dir)
+      .map(([key, entry]) => {
+        if (!entry) return null;
+        const teacherId = String(entry.teacherId || key || "").trim();
+        const name = String(entry.name || teacherId || "Teacher").trim();
         if (!teacherId) return null;
-        const userIsActive = user?.isActive;
-        const rowIsActive = row?.isActive;
-        const isActive = !(
-          userIsActive === false || userIsActive === "false" ||
-          rowIsActive === false || String(rowIsActive) === "false"
-        );
+        const isActive = entry.isActive !== false;
 
         return {
-          teacherRecordKey: String(teacherRecordKey),
+          teacherRecordKey: key,
           teacherId,
           teacherName: name,
-          userId: String(row.userId || ""),
+          userId: String(entry.userId || ""),
           isActive,
         };
       })
@@ -279,7 +263,11 @@ export default function SubjectManagementPage() {
     setError("");
 
     try {
-      const gradeNode = await readSchoolNode("GradeManagement/grades");
+      const gradeRes = await axios.get(`${API_BASE}/grade-management/grades`, {
+        params: { schoolCode },
+        timeout: 12000,
+      });
+      const gradeNode = gradeRes?.data?.grades || {};
       writeSessionCache(GRADE_CACHE_KEY, gradeNode);
       const normalized = normalizeGrades(gradeNode);
       setGrades(normalized);
@@ -330,20 +318,27 @@ export default function SubjectManagementPage() {
       }
 
       try {
-        const [teachersNode, usersNode, studentsNode] = await Promise.all([
-          readSchoolNode("Teachers"),
-          readSchoolNode("Users"),
-          readSchoolNode("Students"),
+        const [teacherDirectoryRes, studentDirectoryRes] = await Promise.all([
+          axios.get(`${API_BASE}/directory/teachers`, {
+            params: { schoolCode },
+            timeout: 12000,
+          }),
+          axios.get(`${API_BASE}/directory/students`, {
+            params: { schoolCode },
+            timeout: 12000,
+          }),
         ]);
+        const directoryNode = teacherDirectoryRes?.data?.teachers || {};
+        const studentDirectoryNode = studentDirectoryRes?.data?.students || {};
 
-        const teacherList = normalizeTeacherList(teachersNode, usersNode);
+        const teacherList = normalizeTeacherList(directoryNode);
 
         setTeachers(teacherList);
-        setGrades((prev) => mergeSectionsFromStudents(prev, studentsNode));
+        setGrades((prev) => mergeSectionsFromStudents(prev, studentDirectoryNode));
 
         writeSessionCache(TEACHER_CACHE_KEY, {
           teachers: teacherList,
-          students: studentsNode && typeof studentsNode === "object" ? studentsNode : {},
+          students: studentDirectoryNode && typeof studentDirectoryNode === "object" ? studentDirectoryNode : {},
         });
       } catch (teacherError) {
         setTeachers([]);
@@ -355,7 +350,7 @@ export default function SubjectManagementPage() {
     };
 
     fetchTeachers();
-  }, [schoolCode]);
+  }, [API_BASE, schoolCode]);
 
   const totalSubjects = useMemo(
     () => grades.reduce((sum, gradeItem) => sum + (gradeItem.subjects?.length || 0), 0),

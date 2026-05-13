@@ -1,14 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { FaArrowLeft, FaPaperPlane, FaCheck, FaImage, FaTimes, FaFilter } from "react-icons/fa";
+import axios from "axios";
 import { ref, onValue, push, runTransaction, update, get, set } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, storage } from "../firebase";
-import { FIREBASE_DATABASE_URL } from "../config.js";
+import { BACKEND_BASE, FIREBASE_DATABASE_URL } from "../config.js";
 import {
-  fetchJson,
-  formatLastMessagePreview,
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  buildOwnerChatSummariesPath,
+  getConversationSortTime,
   mapInBatches,
+  normalizeChatSummaryValue,
   resolveExistingChatKey,
 } from "../utils/chatRtdb";
 import ProfileAvatar from "../components/ProfileAvatar";
@@ -16,6 +20,11 @@ import "../styles/global.css";
 
 const RTDB_BASE = FIREBASE_DATABASE_URL;
 const DEFAULT_PROFILE_IMAGE = "/default-profile.png";
+const CHAT_POLL_IDLE_GRACE_MS = 2 * 60 * 1000;
+const PRESENCE_POLL_INTERVAL_MS = 2 * 60 * 1000;
+const PRESENCE_BATCH_SIZE = 12;
+// Contact-list data changes rarely — cache for 15 minutes to avoid re-downloading on every navigation
+const CONTACT_LIST_CACHE_TTL_MS = 15 * 60 * 1000;
 
 const sortedChatId = (id1, id2) => {
   const a = String(id1 || "").trim();
@@ -195,6 +204,12 @@ const officeRoleLabel = (role) => {
   return "Management";
 };
 
+const sortContactsBySummary = (left, right) => {
+  return String(left?.name || "").localeCompare(String(right?.name || ""), undefined, {
+    sensitivity: "base",
+  });
+};
+
 export default function AllChat() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -206,8 +221,10 @@ export default function AllChat() {
   const lastContactScrollTopRef = useRef(0);
   const suppressAutoCardToggleRef = useRef(false);
   const autoCardToggleTimeoutRef = useRef(null);
+  const lastChatActivityAtRef = useRef(Date.now());
 
   const admin = JSON.parse(localStorage.getItem("admin") || localStorage.getItem("gojo_admin") || "{}") || {};
+  const API_BASE = `${BACKEND_BASE}/api`;
   const adminUserId = String(admin.userId || "").trim();
   const schoolCode = String(admin.schoolCode || "").trim();
   const [resolvedSchoolScopeCode, setResolvedSchoolScopeCode] = useState(() =>
@@ -215,8 +232,25 @@ export default function AllChat() {
   );
   const effectiveSchoolScopeCode = String(resolvedSchoolScopeCode || schoolCode || "").trim();
   const schoolNodePrefix = effectiveSchoolScopeCode ? `Platform1/Schools/${effectiveSchoolScopeCode}` : "";
-  const schoolDbRoot = effectiveSchoolScopeCode ? `${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(effectiveSchoolScopeCode)}` : RTDB_BASE;
   const scopedPath = (path) => (schoolNodePrefix ? `${schoolNodePrefix}/${path}` : path);
+  const readSchoolNodeApi = async (path, fallbackValue = {}) => {
+    if (!effectiveSchoolScopeCode) {
+      return fallbackValue;
+    }
+    try {
+      const response = await axios.get(`${API_BASE}/school-node-read`, {
+        params: {
+          schoolCode: effectiveSchoolScopeCode,
+          path,
+        },
+        timeout: 12000,
+      });
+      const data = response?.data?.data;
+      return data === null || data === undefined ? fallbackValue : data;
+    } catch {
+      return fallbackValue;
+    }
+  };
 
   const [teachers, setTeachers] = useState([]);
   const [students, setStudents] = useState([]);
@@ -304,61 +338,7 @@ export default function AllChat() {
         return;
       }
 
-      const seedSet = new Set(seedCodes.map((value) => value.toLowerCase()));
       const resolvedCandidates = [...seedCodes];
-
-      try {
-        const schoolIndexRes = await fetch(`${RTDB_BASE}/Platform1/Schools.json?shallow=true`);
-        const schoolIndexData = await schoolIndexRes.json();
-        const schoolKeys = Object.keys(schoolIndexData || {});
-        const normalizedSeedValues = Array.from(seedSet);
-
-        schoolKeys.forEach((schoolKey) => {
-          const normalizedKey = String(schoolKey || "").trim().toLowerCase();
-          if (!normalizedKey) {
-            return;
-          }
-
-          const matchesSeed = normalizedSeedValues.some(
-            (seedValue) =>
-              normalizedKey === seedValue ||
-              normalizedKey.endsWith(`-${seedValue}`) ||
-              normalizedKey.startsWith(`${seedValue}-`) ||
-              normalizedKey.includes(`-${seedValue}-`)
-          );
-
-          if (matchesSeed) {
-            resolvedCandidates.push(schoolKey);
-          }
-        });
-
-        if (schoolKeys.length > 0 && schoolKeys.length <= 60) {
-          const schoolInfoResponses = await Promise.all(
-            schoolKeys.map((schoolKey) =>
-              fetch(`${RTDB_BASE}/Platform1/Schools/${encodeURIComponent(schoolKey)}/schoolInfo.json`)
-                .then((response) => response.json())
-                .then((schoolInfo) => ({ schoolKey, schoolInfo }))
-                .catch(() => ({ schoolKey, schoolInfo: null }))
-            )
-          );
-
-          schoolInfoResponses.forEach(({ schoolKey, schoolInfo }) => {
-            const aliases = uniqueNonEmptyValues([
-              schoolKey,
-              schoolInfo?.schoolCode,
-              schoolInfo?.shortName,
-            ]);
-
-            if (
-              aliases.some((alias) => seedSet.has(String(alias || "").trim().toLowerCase()))
-            ) {
-              resolvedCandidates.push(...aliases);
-            }
-          });
-        }
-      } catch {
-        // Ignore school-scope resolution failures and continue with stored school code.
-      }
 
       if (!cancelled) {
         setResolvedSchoolScopeCode(pickPreferredSchoolScopeCode(resolvedCandidates) || seedCodes[0] || "");
@@ -371,6 +351,35 @@ export default function AllChat() {
       cancelled = true;
     };
   }, [schoolCode]);
+
+  useEffect(() => {
+    const markChatActivity = () => {
+      lastChatActivityAtRef.current = Date.now();
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") {
+        return;
+      }
+      markChatActivity();
+    };
+
+    window.addEventListener("focus", markChatActivity);
+    window.addEventListener("online", markChatActivity);
+    window.addEventListener("pointerdown", markChatActivity, { passive: true });
+    window.addEventListener("touchstart", markChatActivity, { passive: true });
+    window.addEventListener("keydown", markChatActivity);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", markChatActivity);
+      window.removeEventListener("online", markChatActivity);
+      window.removeEventListener("pointerdown", markChatActivity);
+      window.removeEventListener("touchstart", markChatActivity);
+      window.removeEventListener("keydown", markChatActivity);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
 
   useEffect(() => {
     if (selectedStudentSection === "All") return;
@@ -456,132 +465,216 @@ export default function AllChat() {
     const fetchUsers = async () => {
       setLoadingContacts(true);
       try {
-        const [teachersRes, studentsRes, parentsRes, hrRes, financeRes, registerersRes, usersRes, chatIndexRes] = await Promise.all([
-          fetchJson(`${schoolDbRoot}/Teachers.json`, {}),
-          fetchJson(`${schoolDbRoot}/Students.json`, {}),
-          fetchJson(`${schoolDbRoot}/Parents.json`, {}),
-          fetchJson(`${schoolDbRoot}/HR.json`, {}),
-          fetchJson(`${schoolDbRoot}/Finance.json`, {}),
-          fetchJson(`${schoolDbRoot}/Registerers.json`, {}),
-          fetchJson(`${schoolDbRoot}/Users.json`, {}),
-          fetchJson(`${schoolDbRoot}/Chats.json?shallow=true`, {}),
+        // Use directory nodes (lightweight summaries) instead of full role nodes.
+        // Users.json is dropped — it's keyed by push-key so usersMap[userId] always
+        // returned {} anyway; role/directory nodes already carry name & profileImage.
+        const [teachersRes, studentsRes, parentsRes, hrRes, financeRes, registerersRes, ownersRaw, teachersRaw, studentsRaw, parentsRaw, ownerSummariesRes] = await Promise.all([
+          readSchoolNodeApi("TeacherDirectory", {}),
+          readSchoolNodeApi("StudentDirectory", {}),
+          readSchoolNodeApi("ParentDirectory", {}),
+          readSchoolNodeApi("HR", {}),
+          readSchoolNodeApi("Finance", {}),
+          readSchoolNodeApi("Registerers", {}),
+          readSchoolNodeApi("Users", {}),
+          readSchoolNodeApi("Teachers", {}),
+          readSchoolNodeApi("Students", {}),
+          readSchoolNodeApi("Parents", {}),
+          readSchoolNodeApi(buildOwnerChatSummariesPath(adminUserId), {}),
         ]);
-
-        const usersMap = usersRes && typeof usersRes === "object" ? usersRes : {};
-        const chatKeyIndex = new Set(Object.keys(chatIndexRes || {}));
-
-        const buildLastMessageMeta = async (otherUserId) => {
-          const resolvedChatKey = resolveExistingChatKey(chatKeyIndex, adminUserId, otherUserId);
-          if (!resolvedChatKey || !chatKeyIndex.has(resolvedChatKey)) {
-            return {
-              chatKey: "",
-              lastMsgTime: 0,
-              lastMsgText: "",
-              unread: 0,
-            };
+        const usersById = Object.values(ownersRaw || {}).reduce((result, userRecord) => {
+          const userId = String(userRecord?.userId || "").trim();
+          if (userId) {
+            result[userId] = userRecord;
+          }
+          return result;
+        }, {});
+        const ownerSummaries = ownerSummariesRes && typeof ownerSummariesRes === "object" ? ownerSummariesRes : {};
+        const summaryByOtherUserId = Object.entries(ownerSummaries).reduce((result, [chatId, summaryValue]) => {
+          const summary = normalizeChatSummaryValue(summaryValue, { chatId });
+          if (!summary.otherUserId) {
+            return result;
           }
 
-          const encodedChatKey = encodeURIComponent(resolvedChatKey);
-          const [lastMessage, unreadValue] = await Promise.all([
-            fetchJson(`${schoolDbRoot}/Chats/${encodedChatKey}/lastMessage.json`, null),
-            fetchJson(`${schoolDbRoot}/Chats/${encodedChatKey}/unread/${encodeURIComponent(adminUserId)}.json`, 0),
-          ]);
+          const currentSummary = result[summary.otherUserId];
+          if (!currentSummary || summary.lastMessageTime >= currentSummary.lastMessageTime) {
+            result[summary.otherUserId] = summary;
+          }
+
+          return result;
+        }, {});
+
+        const buildLastMessageMeta = (otherUserId) => {
+          const summary = summaryByOtherUserId[String(otherUserId || "").trim()] || null;
+          const resolvedChatKey = String(summary?.chatId || sortedChatId(adminUserId, otherUserId)).trim();
 
           return {
             chatKey: resolvedChatKey,
-            lastMsgTime: Number(lastMessage?.timeStamp || 0),
-            lastMsgText: formatLastMessagePreview(lastMessage),
-            unread: Number(unreadValue || 0),
+            lastMsgTime: getConversationSortTime(summary?.lastMessageTime),
+            lastMsgText: String(summary?.lastMessageText || "").trim(),
+            unread: Math.max(0, Number(summary?.unreadCount || 0) || 0),
           };
         };
 
         const hydrateChatPreviewMeta = async (records) => {
           const hydratedRecords = await mapInBatches(records, 24, async (record) => ({
             ...record,
-            ...(await buildLastMessageMeta(record.userId)),
+            ...buildLastMessageMeta(record.userId),
           }));
 
           return hydratedRecords;
         };
 
-        const teacherRecords = Object.entries(teachersRes || {})
+        // TeacherDirectory: each entry has { teacherId, userId, name, profileImage, isActive, ... }
+        const teacherDirectoryRecords = Object.entries(teachersRes || {})
           .map(([teacherId, teacherNode]) => {
             const userId = String(teacherNode?.userId || "").trim();
             if (!userId) return null;
-            const user = usersMap?.[userId] || {};
+            const name = pickFirstNonEmpty(teacherNode?.name, teacherId, "Teacher");
             return {
               id: teacherId,
               teacherId,
               userId,
               type: "teacher",
-              name: pickFirstNonEmpty(user?.name, teacherNode?.name, teacherId, "Teacher"),
-              profileImage: resolveAvatarSrc(user?.profileImage || teacherNode?.profileImage, pickFirstNonEmpty(user?.name, teacherNode?.name, "Teacher")),
-              lastSeen: user?.lastSeen || null,
-              isActive: isActiveRecord({ ...teacherNode, ...user }),
+              name,
+              profileImage: resolveAvatarSrc(teacherNode?.profileImage, name),
+              lastSeen: null,
+              isActive: teacherNode?.isActive !== false,
             };
           })
           .filter(Boolean)
           .filter((record) => record.isActive);
 
-        const mappedTeachers = (await hydrateChatPreviewMeta(teacherRecords))
-          .sort((a, b) => b.lastMsgTime - a.lastMsgTime);
-
-        const studentRecords = Object.entries(studentsRes || {})
-          .map(([studentId, studentNode]) => {
-            const basic = studentNode?.basicStudentInformation || {};
-            const userId = String(studentNode?.userId || basic?.userId || "").trim();
+        const teacherFallbackRecords = Object.entries(teachersRaw || {})
+          .map(([teacherId, teacherNode]) => {
+            const userId = String(teacherNode?.userId || "").trim();
             if (!userId) return null;
-            const user = usersMap?.[userId] || {};
-            const name = pickFirstNonEmpty(basic?.name, studentNode?.name, user?.name, studentId, "Student");
+            const userNode = usersById[userId] || {};
+            const name = pickFirstNonEmpty(userNode?.name, userNode?.username, teacherNode?.name, teacherId, "Teacher");
+            return {
+              id: teacherId,
+              teacherId,
+              userId,
+              type: "teacher",
+              name,
+              profileImage: resolveAvatarSrc(userNode?.profileImage || teacherNode?.profileImage, name),
+              lastSeen: null,
+              isActive: teacherNode?.status !== "inactive" && userNode?.isActive !== false,
+            };
+          })
+          .filter(Boolean)
+          .filter((record) => record.isActive);
+
+        const teacherRecords = teacherDirectoryRecords.length ? teacherDirectoryRecords : teacherFallbackRecords;
+
+        const mappedTeachers = (await hydrateChatPreviewMeta(teacherRecords)).sort(sortContactsBySummary);
+
+        // StudentDirectory: each entry has { studentId, userId, name, profileImage, grade, section, isActive, ... }
+        const studentDirectoryRecords = Object.entries(studentsRes || {})
+          .map(([studentId, studentNode]) => {
+            const userId = String(studentNode?.userId || "").trim();
+            if (!userId) return null;
+            const name = pickFirstNonEmpty(studentNode?.name, studentId, "Student");
             return {
               id: studentId,
               studentId,
               userId,
               type: "student",
               name,
-              grade: pickFirstNonEmpty(basic?.grade, studentNode?.grade),
-              section: pickFirstNonEmpty(basic?.section, studentNode?.section).toUpperCase(),
-              profileImage: resolveAvatarSrc(basic?.studentPhoto || studentNode?.studentPhoto || studentNode?.profileImage || user?.profileImage, name),
-              lastSeen: user?.lastSeen || null,
-              isActive: isActiveRecord({ ...studentNode, ...user, status: basic?.status || studentNode?.status || user?.status }),
+              grade: String(studentNode?.grade || "").trim(),
+              section: String(studentNode?.section || "").trim().toUpperCase(),
+              profileImage: resolveAvatarSrc(studentNode?.profileImage, name),
+              lastSeen: null,
+              isActive: studentNode?.isActive !== false,
             };
           })
           .filter(Boolean)
           .filter((record) => record.isActive);
 
-        const mappedStudents = (await hydrateChatPreviewMeta(studentRecords))
-          .sort((a, b) => b.lastMsgTime - a.lastMsgTime);
+        const studentFallbackRecords = Object.entries(studentsRaw || {})
+          .map(([studentId, studentNode]) => {
+            const userId = String(studentNode?.userId || studentNode?.use || studentNode?.user || "").trim();
+            if (!userId) return null;
+            const userNode = usersById[userId] || {};
+            const basicInfo = studentNode?.basicStudentInformation || {};
+            const name = pickFirstNonEmpty(
+              userNode?.name,
+              userNode?.username,
+              studentNode?.name,
+              studentNode?.studentName,
+              basicInfo?.name,
+              studentId,
+              "Student"
+            );
+            return {
+              id: studentId,
+              studentId,
+              userId,
+              type: "student",
+              name,
+              grade: String(studentNode?.grade || basicInfo?.grade || "").trim(),
+              section: String(studentNode?.section || basicInfo?.section || "").trim().toUpperCase(),
+              profileImage: resolveAvatarSrc(userNode?.profileImage || studentNode?.profileImage || basicInfo?.studentPhoto, name),
+              lastSeen: null,
+              isActive: studentNode?.isActive !== false && userNode?.isActive !== false,
+            };
+          })
+          .filter(Boolean)
+          .filter((record) => record.isActive);
 
-        const parentRecords = Object.entries(parentsRes || {})
+        const studentRecords = studentDirectoryRecords.length ? studentDirectoryRecords : studentFallbackRecords;
+
+        const mappedStudents = (await hydrateChatPreviewMeta(studentRecords)).sort(sortContactsBySummary);
+
+        // ParentDirectory: each entry has { userId, name, profileImage, isActive, children, ... }
+        const parentDirectoryRecords = Object.entries(parentsRes || {})
           .map(([parentId, parentNode]) => {
             const userId = String(parentNode?.userId || "").trim();
             if (!userId) return null;
-            const user = usersMap?.[userId] || {};
-            const name = pickFirstNonEmpty(user?.name, parentNode?.name, parentId, "Parent");
+            const name = pickFirstNonEmpty(parentNode?.name, parentId, "Parent");
             return {
               id: parentId,
               parentId,
               userId,
               type: "parent",
               name,
-              profileImage: resolveAvatarSrc(user?.profileImage || parentNode?.profileImage, name),
-              lastSeen: user?.lastSeen || null,
-              isActive: isActiveRecord({ ...parentNode, ...user }),
+              profileImage: resolveAvatarSrc(parentNode?.profileImage, name),
+              lastSeen: null,
+              isActive: parentNode?.isActive !== false,
             };
           })
           .filter(Boolean)
           .filter((record) => record.isActive);
 
-        const mappedParents = (await hydrateChatPreviewMeta(parentRecords))
-          .sort((a, b) => b.lastMsgTime - a.lastMsgTime);
+        const parentFallbackRecords = Object.entries(parentsRaw || {})
+          .map(([parentId, parentNode]) => {
+            const userId = String(parentNode?.userId || "").trim();
+            if (!userId) return null;
+            const userNode = usersById[userId] || {};
+            const name = pickFirstNonEmpty(userNode?.name, userNode?.username, parentNode?.name, parentId, "Parent");
+            return {
+              id: parentId,
+              parentId,
+              userId,
+              type: "parent",
+              name,
+              profileImage: resolveAvatarSrc(userNode?.profileImage || parentNode?.profileImage, name),
+              lastSeen: null,
+              isActive: parentNode?.isActive !== false && userNode?.isActive !== false,
+            };
+          })
+          .filter(Boolean)
+          .filter((record) => record.isActive);
+
+        const parentRecords = parentDirectoryRecords.length ? parentDirectoryRecords : parentFallbackRecords;
+
+        const mappedParents = (await hydrateChatPreviewMeta(parentRecords)).sort(sortContactsBySummary);
 
         const mapOfficeRecords = (source, officeRole) =>
           Object.entries(source || {})
             .map(([roleNodeId, roleNode]) => {
               const userId = String(roleNode?.userId || "").trim();
               if (!userId) return null;
-              const user = usersMap?.[userId] || {};
-              const name = pickFirstNonEmpty(user?.name, roleNode?.name, roleNodeId, officeRoleLabel(officeRole));
+              const name = pickFirstNonEmpty(roleNode?.name, roleNodeId, officeRoleLabel(officeRole));
               return {
                 id: roleNodeId,
                 roleNodeId,
@@ -589,9 +682,9 @@ export default function AllChat() {
                 type: "management",
                 officeRole,
                 name,
-                profileImage: resolveAvatarSrc(user?.profileImage || roleNode?.profileImage, name),
-                lastSeen: user?.lastSeen || null,
-                isActive: isActiveRecord({ ...roleNode, ...user }),
+                profileImage: resolveAvatarSrc(roleNode?.profileImage, name),
+                lastSeen: null,
+                isActive: isActiveRecord(roleNode),
               };
             })
             .filter(Boolean)
@@ -603,8 +696,7 @@ export default function AllChat() {
           ...mapOfficeRecords(registerersRes, "registerer"),
         ];
 
-        const mappedManagements = (await hydrateChatPreviewMeta(managementRecords))
-          .sort((a, b) => b.lastMsgTime - a.lastMsgTime || a.name.localeCompare(b.name));
+        const mappedManagements = (await hydrateChatPreviewMeta(managementRecords)).sort(sortContactsBySummary);
 
         setTeachers(mappedTeachers);
         setStudents(mappedStudents);
@@ -624,7 +716,7 @@ export default function AllChat() {
     };
 
     fetchUsers();
-  }, [adminUserId, schoolDbRoot]);
+  }, [adminUserId, effectiveSchoolScopeCode]);
 
   useEffect(() => {
     if (!selectedChatUser?.userId) return;
@@ -640,24 +732,57 @@ export default function AllChat() {
   useEffect(() => {
     if (!adminUserId) return;
 
-    const unsubscribers = [];
-    const allUsers = [...teachers, ...students, ...parents, ...managements];
+    const summaryRef = ref(db, scopedPath(buildOwnerChatSummariesPath(adminUserId)));
+    const unsubscribe = onValue(summaryRef, (snapshot) => {
+      const ownerSummaries = snapshot.val() || {};
+      const summaryByOtherUserId = Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {}).reduce(
+        (result, [chatId, summaryValue]) => {
+          const summary = normalizeChatSummaryValue(summaryValue, { chatId });
+          if (!summary.otherUserId) {
+            return result;
+          }
 
-    allUsers.forEach((user) => {
-      if (!user?.userId || !user?.chatKey) return;
-      const chatKey = user.chatKey;
-      const unreadRef = ref(db, scopedPath(`Chats/${chatKey}/unread/${adminUserId}`));
-      const unsubscribe = onValue(unreadRef, (snapshot) => {
-        setUnreadCounts((prev) => ({
-          ...prev,
-          [user.userId]: Number(snapshot.val() || 0),
-        }));
-      });
-      unsubscribers.push(unsubscribe);
+          const currentSummary = result[summary.otherUserId];
+          if (!currentSummary || summary.lastMessageTime >= currentSummary.lastMessageTime) {
+            result[summary.otherUserId] = summary;
+          }
+
+          return result;
+        },
+        {}
+      );
+
+      const nextUnreadCounts = {};
+      const mergeSummary = (record) => {
+        const summary = summaryByOtherUserId[String(record?.userId || "").trim()] || null;
+        const unreadCount = Math.max(0, Number(summary?.unreadCount || 0) || 0);
+        nextUnreadCounts[String(record?.userId || "").trim()] = unreadCount;
+
+        if (!summary) {
+          return {
+            ...record,
+            unread: unreadCount,
+          };
+        }
+
+        return {
+          ...record,
+          chatKey: String(summary.chatId || record?.chatKey || "").trim(),
+          lastMsgTime: getConversationSortTime(summary.lastMessageTime),
+          lastMsgText: String(summary.lastMessageText || "").trim(),
+          unread: unreadCount,
+        };
+      };
+
+      setTeachers((previousTeachers) => previousTeachers.map(mergeSummary).sort(sortContactsBySummary));
+      setStudents((previousStudents) => previousStudents.map(mergeSummary).sort(sortContactsBySummary));
+      setParents((previousParents) => previousParents.map(mergeSummary).sort(sortContactsBySummary));
+      setManagements((previousManagements) => previousManagements.map(mergeSummary).sort(sortContactsBySummary));
+      setUnreadCounts(nextUnreadCounts);
     });
 
-    return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
-  }, [teachers, students, parents, managements, adminUserId, schoolNodePrefix]);
+    return () => unsubscribe();
+  }, [adminUserId, schoolNodePrefix]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -704,7 +829,7 @@ export default function AllChat() {
     let unsubscribePresence = null;
 
     const connect = async () => {
-      const chatKey = currentChatKey || await resolveLegacyChatKey(selectedChatUser.userId);
+      const chatKey = currentChatKey || selectedChatUser.chatKey || await resolveLegacyChatKey(selectedChatUser.userId);
       if (!chatKey || cancelled) return;
 
       setCurrentChatKey(chatKey);
@@ -725,6 +850,10 @@ export default function AllChat() {
         setMessages(list);
 
         const updates = {};
+        const hasUnseenIncomingMessages = Object.values(data).some(
+          (message) => String(message?.receiverId) === String(adminUserId) && !message?.seen
+        );
+        const seenAt = Date.now();
         Object.entries(data).forEach(([messageId, message]) => {
           if (String(message?.receiverId) === String(adminUserId) && !message?.seen) {
             updates[`${scopedPath(`Chats/${chatKey}/messages/${messageId}/seen`)}`] = true;
@@ -732,13 +861,32 @@ export default function AllChat() {
         });
 
         try {
-          await update(ref(db), {
-            ...updates,
-            [scopedPath(`Chats/${chatKey}/unread/${adminUserId}`)]: 0,
-          });
+          if (Object.keys(updates).length) {
+            await update(ref(db), updates);
+          }
         } catch {
           // ignore read receipt write failures
         }
+
+        update(
+          ref(db, scopedPath(buildChatSummaryPath(adminUserId, chatKey))),
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: selectedChatUser.userId,
+            unreadCount: 0,
+            ...(hasUnseenIncomingMessages
+              ? {
+                  lastMessageSeen: true,
+                  lastMessageSeenAt: seenAt,
+                }
+              : {}),
+          })
+        ).catch(() => {});
+
+        setUnreadCounts((previousCounts) => ({
+          ...previousCounts,
+          [selectedChatUser.userId]: 0,
+        }));
       });
 
       unsubscribePresence = onValue(lastSeenRef, (snapshot) => {
@@ -759,20 +907,89 @@ export default function AllChat() {
   }, [selectedChatUser, adminUserId, currentChatKey, schoolNodePrefix]);
 
   useEffect(() => {
-    try {
-      const presenceRef = ref(db, scopedPath("Presence"));
-      const unsubscribe = onValue(presenceRef, (snapshot) => {
-        setPresence(snapshot.val() || {});
-      });
-      return () => unsubscribe();
-    } catch (error) {
-      console.warn("Presence listener unavailable:", error);
+    let cancelled = false;
+
+    const activeContacts = selectedTab === "student"
+      ? students
+      : selectedTab === "parent"
+        ? parents
+        : selectedTab === "management"
+          ? managements
+          : teachers;
+
+    const presenceUserIds = [...new Set([
+      ...activeContacts.map((contact) => String(contact?.userId || "").trim()).filter(Boolean),
+      String(selectedChatUser?.userId || "").trim(),
+    ].filter(Boolean))];
+
+    if (!presenceUserIds.length) {
+      setPresence({});
+      return undefined;
     }
-  }, [schoolNodePrefix]);
+
+    const loadPresence = async ({ force = false } = {}) => {
+      const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
+      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+      const isRecentlyActive = Date.now() - lastChatActivityAtRef.current <= CHAT_POLL_IDLE_GRACE_MS;
+      if (!force && (!isVisible || !isOnline || !isRecentlyActive)) {
+        return;
+      }
+
+      try {
+        const entries = await mapInBatches(presenceUserIds, PRESENCE_BATCH_SIZE, async (userId) => {
+          const data = await readSchoolNodeApi(`Presence/${userId}`, null);
+
+          return [userId, data];
+        });
+
+        const nextPresence = entries.reduce((result, [userId, value]) => {
+          result[userId] = value;
+          return result;
+        }, {});
+
+        if (!cancelled) {
+          setPresence(nextPresence);
+        }
+      } catch (error) {
+        console.warn("Presence polling unavailable:", error);
+        if (!cancelled) {
+          setPresence({});
+        }
+      }
+    };
+
+    const handleFocusedPresenceRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      lastChatActivityAtRef.current = Date.now();
+      void loadPresence({ force: true });
+    };
+
+    void loadPresence({ force: true });
+    const intervalId = window.setInterval(() => {
+      void loadPresence();
+    }, PRESENCE_POLL_INTERVAL_MS);
+    window.addEventListener("focus", handleFocusedPresenceRefresh);
+    window.addEventListener("online", handleFocusedPresenceRefresh);
+    document.addEventListener("visibilitychange", handleFocusedPresenceRefresh);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleFocusedPresenceRefresh);
+      window.removeEventListener("online", handleFocusedPresenceRefresh);
+      document.removeEventListener("visibilitychange", handleFocusedPresenceRefresh);
+    };
+  }, [selectedTab, selectedChatUser?.userId, effectiveSchoolScopeCode, teachers, students, parents, managements]);
 
   const getActiveChatKey = async () => {
     if (!selectedChatUser || !adminUserId) return null;
     if (currentChatKey) return currentChatKey;
+    if (selectedChatUser.chatKey) {
+      setCurrentChatKey(selectedChatUser.chatKey);
+      return selectedChatUser.chatKey;
+    }
     const resolved = await resolveLegacyChatKey(selectedChatUser.userId);
     setCurrentChatKey(resolved);
     return resolved;
@@ -816,15 +1033,41 @@ export default function AllChat() {
       [selectedChatUser.userId]: true,
     });
 
-    await update(ref(db, scopedPath(`Chats/${chatKey}/lastMessage`)), {
-      text: input,
-      senderId: adminUserId,
-      seen: false,
-      timeStamp: messageData.timeStamp,
-    });
+    await Promise.all([
+      update(
+        ref(db, scopedPath(buildChatSummaryPath(adminUserId, chatKey))),
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId: selectedChatUser.userId,
+          unreadCount: 0,
+          lastMessageText: input,
+          lastMessageType: "text",
+          lastMessageTime: messageData.timeStamp,
+          lastSenderId: adminUserId,
+          lastMessageSeen: false,
+          lastMessageSeenAt: null,
+        })
+      ),
+      update(
+        ref(db, scopedPath(buildChatSummaryPath(selectedChatUser.userId, chatKey))),
+        buildChatSummaryUpdate({
+          chatId: chatKey,
+          otherUserId: adminUserId,
+          lastMessageText: input,
+          lastMessageType: "text",
+          lastMessageTime: messageData.timeStamp,
+          lastSenderId: adminUserId,
+          lastMessageSeen: false,
+          lastMessageSeenAt: null,
+        })
+      ),
+    ]);
 
     try {
-      await runTransaction(ref(db, scopedPath(`Chats/${chatKey}/unread/${selectedChatUser.userId}`)), (current) => Number(current || 0) + 1);
+      await runTransaction(
+        ref(db, scopedPath(`${buildChatSummaryPath(selectedChatUser.userId, chatKey)}/unreadCount`)),
+        (current) => Number(current || 0) + 1
+      );
       await set(ref(db, scopedPath(`Chats/${chatKey}/typing`)), { userId: null });
     } catch {
       // ignore unread increment failures
@@ -888,16 +1131,41 @@ export default function AllChat() {
         [selectedChatUser.userId]: true,
       });
 
-      await update(ref(db, scopedPath(`Chats/${chatKey}/lastMessage`)), {
-        seen: false,
-        senderId: adminUserId,
-        text: "📷 Image",
-        timeStamp,
-        type: "image",
-      });
+      await Promise.all([
+        update(
+          ref(db, scopedPath(buildChatSummaryPath(adminUserId, chatKey))),
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: selectedChatUser.userId,
+            unreadCount: 0,
+            lastMessageText: "",
+            lastMessageType: "image",
+            lastMessageTime: timeStamp,
+            lastSenderId: adminUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+        update(
+          ref(db, scopedPath(buildChatSummaryPath(selectedChatUser.userId, chatKey))),
+          buildChatSummaryUpdate({
+            chatId: chatKey,
+            otherUserId: adminUserId,
+            lastMessageText: "",
+            lastMessageType: "image",
+            lastMessageTime: timeStamp,
+            lastSenderId: adminUserId,
+            lastMessageSeen: false,
+            lastMessageSeenAt: null,
+          })
+        ),
+      ]);
 
       try {
-        await runTransaction(ref(db, scopedPath(`Chats/${chatKey}/unread/${selectedChatUser.userId}`)), (current) => Number(current || 0) + 1);
+        await runTransaction(
+          ref(db, scopedPath(`${buildChatSummaryPath(selectedChatUser.userId, chatKey)}/unreadCount`)),
+          (current) => Number(current || 0) + 1
+        );
       } catch {
         // ignore unread increment failures
       }

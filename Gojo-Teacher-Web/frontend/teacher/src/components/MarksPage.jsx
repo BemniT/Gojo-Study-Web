@@ -19,6 +19,7 @@ import "../styles/global.css";
 import { API_BASE } from "../api/apiConfig";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 import { getTeacherCourseContext } from "../api/teacherApi";
+import { buildChatSummaryPath, buildChatSummaryUpdate } from "../utils/chatRtdb";
 import {
   clearCachedChatSummary,
   fetchTeacherConversationSummaries,
@@ -222,7 +223,7 @@ const getStoredTeacher = () => {
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === "object" ? parsed : null;
   } catch {
-    localStorage.removeItem("teacher");
+    window.__gojoClearTeacherState?.();
     return null;
   }
 };
@@ -394,18 +395,15 @@ export default function MarksPage() {
         });
 
         if (!teacherCourses.length) {
-          const [coursesRes, classMarksRes, courseStatsRes] = await Promise.all([
+          const [coursesRes, courseStatsRes] = await Promise.all([
             axios.get(`${rtdbBase}/Courses.json`).catch(() => ({ data: {} })),
-            axios.get(`${rtdbBase}/ClassMarks.json`).catch(() => ({ data: {} })),
             axios.get(`${rtdbBase}/SchoolExams/CourseStats.json`).catch(() => ({ data: {} })),
           ]);
 
           const coursesMap = coursesRes.data || {};
-          const classMarks = classMarksRes.data || {};
           const courseStats = courseStatsRes.data || {};
           const fallbackCourseIds = new Set([
             ...Object.keys(coursesMap || {}),
-            ...Object.keys(classMarks || {}),
             ...Object.keys(courseStats || {}),
           ]);
 
@@ -414,7 +412,11 @@ export default function MarksPage() {
             .map((courseId) => {
               const stored = coursesMap?.[courseId] || {};
               const virtual = parseVirtualCourseFromId(courseId);
-              const marksCount = Object.keys(classMarks?.[courseId] || {}).length;
+              const activityScore = Math.max(
+                0,
+                Number(courseStats?.[courseId]?.totalSubmissions || 0),
+                Number(courseStats?.[courseId]?.totalAssessments || 0)
+              );
               return {
                 ...virtual,
                 id: courseId,
@@ -423,11 +425,11 @@ export default function MarksPage() {
                 grade: String(stored.grade || virtual.grade || "").trim(),
                 section: String(stored.section || stored.secation || virtual.section || "").trim().toUpperCase(),
                 virtual: !stored || !Object.keys(stored).length,
-                _marksCount: marksCount,
+                _activityScore: activityScore,
               };
             })
-            .sort((a, b) => (b._marksCount || 0) - (a._marksCount || 0))
-            .map(({ _marksCount, ...rest }) => rest);
+            .sort((a, b) => (b._activityScore || 0) - (a._activityScore || 0))
+            .map(({ _activityScore, ...rest }) => rest);
         }
 
         setCourses((prev) => {
@@ -1019,8 +1021,8 @@ export default function MarksPage() {
   const handleLogout = async () => {
     const didFlush = await flushPendingMarks();
     if (!didFlush) return;
-    localStorage.removeItem("teacher");
-    navigate("/login");
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+    navigate("/login", { replace: true });
   };
 
   useEffect(() => {
@@ -1131,7 +1133,16 @@ export default function MarksPage() {
     navigate("/all-chat", { state: { contact, chatId, tab: "marks" } });
     // clear unread in RTDB for this teacher
     try {
-      await axios.put(`${rtdbBase}/Chats/${chatId}/unread/${teacher.userId}.json`, null);
+      await axios.patch(
+        `${rtdbBase}/${buildChatSummaryPath(teacher.userId, chatId)}.json`,
+        buildChatSummaryUpdate({
+          chatId,
+          otherUserId: contact?.userId,
+          unreadCount: 0,
+          lastMessageSeen: true,
+          lastMessageSeenAt: Date.now(),
+        })
+      );
       clearCachedChatSummary({
         rtdbBase,
         chatId,

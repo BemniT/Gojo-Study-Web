@@ -329,57 +329,11 @@ const formatCompactDate = (dateValue) => {
   });
 };
 
-const SESSION_CACHE_TTL = 60 * 1000;
 const skeletonBaseStyle = {
   background: "linear-gradient(90deg, color-mix(in srgb, var(--surface-muted) 92%, white) 0%, color-mix(in srgb, var(--surface-panel) 72%, white) 50%, color-mix(in srgb, var(--surface-muted) 92%, white) 100%)",
   backgroundSize: "200% 100%",
   animation: "myPostsSkeletonPulse 1.2s ease-in-out infinite",
   borderRadius: 10,
-};
-
-const readSessionCache = (key, ttlMs = SESSION_CACHE_TTL) => {
-  try {
-    const rawValue = sessionStorage.getItem(key);
-    if (!rawValue) {
-      return null;
-    }
-
-    const parsedValue = JSON.parse(rawValue);
-    if (!parsedValue?.savedAt || Date.now() - parsedValue.savedAt > ttlMs) {
-      sessionStorage.removeItem(key);
-      return null;
-    }
-
-    return parsedValue.data ?? null;
-  } catch (error) {
-    return null;
-  }
-};
-
-const writeSessionCache = (key, data) => {
-  try {
-    sessionStorage.setItem(
-      key,
-      JSON.stringify({
-        savedAt: Date.now(),
-        data,
-      })
-    );
-  } catch (error) {
-    // Ignore cache write failures.
-  }
-};
-
-const getCachedJsonNode = async (cacheKey, requestFactory, ttlMs = SESSION_CACHE_TTL) => {
-  const cachedValue = readSessionCache(cacheKey, ttlMs);
-  if (cachedValue !== null) {
-    return cachedValue;
-  }
-
-  const response = await requestFactory();
-  const data = response?.data || {};
-  writeSessionCache(cacheKey, data);
-  return data;
 };
 
 function MyPosts() {
@@ -460,6 +414,8 @@ function MyPosts() {
   // loading states for edit/delete
   const [savingId, setSavingId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
+  // Per-user record cache to avoid re-downloading the same user repeatedly
+  const notificationUserCacheRef = useRef(new Map());
   const navigate = useNavigate();
   const location = useLocation();
   const FEED_MAX_WIDTH = 760;
@@ -571,8 +527,7 @@ function MyPosts() {
     }
   }, [token]);
 
-  const RTDB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-  const usersCacheKey = "my-posts:users";
+
   const renderSkeletonLine = (width, height = 12, extraStyle = {}) => (
     <div style={{ ...skeletonBaseStyle, width, height, ...extraStyle }} />
   );
@@ -684,13 +639,30 @@ function MyPosts() {
         return;
       }
 
-      const users = await getCachedJsonNode(
-        usersCacheKey,
-        () => axios.get(`${RTDB_BASE}/Users.json`).catch(() => ({ data: {} }))
-      );
+      // Collect only the unique adminIds that aren't already cached
+      const uniqueAdminIds = [...new Set(notifications.map((n) => n.adminId).filter(Boolean))];
+      const userCache = notificationUserCacheRef.current;
+      const uncachedIds = uniqueAdminIds.filter((id) => !userCache.has(id));
 
-      const findAdminUser = (id) =>
-        Object.values(users).find((u) => u.userId === id || u.username === id);
+      // Fetch only the missing users from the school-scoped Users node
+      if (uncachedIds.length > 0 && DB_ROOT) {
+        await Promise.all(
+          uncachedIds.map(async (userId) => {
+            try {
+              const r = await axios.get(`${DB_ROOT}/Users/${userId}.json`);
+              if (r.data && typeof r.data === "object") {
+                userCache.set(userId, r.data);
+              } else {
+                userCache.set(userId, null);
+              }
+            } catch {
+              userCache.set(userId, null);
+            }
+          })
+        );
+      }
+
+      const findAdminUser = (id) => userCache.get(id) || null;
 
       const enriched = notifications.map((n) => {
         const posterUser = findAdminUser(n.adminId);
@@ -756,7 +728,14 @@ function MyPosts() {
     }
 
     try {
-      const res = await axios.get(`${API_BASE}/get_my_posts/${adminId}`, { timeout: 4500 });
+      const res = await axios.get(`${API_BASE}/get_my_posts/${adminId}`, {
+        params: {
+          limit: 200,
+          schoolCode: schoolCode || "",
+          userId: admin?.userId || adminId,
+        },
+        timeout: 12000,
+      });
       const postsArray = Array.isArray(res.data)
         ? res.data
         : Object.entries(res.data || {}).map(([key, post]) => ({
@@ -800,6 +779,70 @@ function MyPosts() {
         setPosts(mappedPosts);
       }
     } catch (err) {
+      const isTimeout = err?.code === "ECONNABORTED" || /timeout/i.test(String(err?.message || ""));
+      if (isTimeout && cachedPosts.length > 0) {
+        // Keep showing cached posts if backend is temporarily slow.
+        if (isCurrentRequest()) {
+          setPosts(cachedPosts);
+        }
+      }
+
+      // Secondary fallback: use the fast school-scoped posts endpoint and filter locally.
+      if (isTimeout && schoolCode) {
+        try {
+          const fallbackRes = await axios.get(`${API_BASE}/get_posts`, {
+            params: { schoolCode, limit: 200 },
+            timeout: 8000,
+          });
+          const sourcePosts = Array.isArray(fallbackRes?.data) ? fallbackRes.data : [];
+          const actorIds = new Set([
+            String(admin?.userId || "").trim(),
+            String(adminId || "").trim(),
+          ]);
+          const filteredPosts = sourcePosts.filter((postItem) =>
+            actorIds.has(String(postItem?.adminId || postItem?.userId || "").trim())
+          );
+
+          const mappedPosts = filteredPosts
+            .map((p) => {
+              const parsedTime = parsePostTimestamp(p) || new Date();
+              const mediaUrl = p.postUrl || p.mediaUrl || null;
+              const postId = p.postId || p.id || "";
+              return {
+                postId: postId || String(p?.postId || p?.id || ""),
+                message: p.message || p.postText || "",
+                postUrl: mediaUrl,
+                time: parsedTime.toLocaleString(),
+                parsedTimeMs: parsedTime.getTime(),
+                parsedTime,
+                edited: p.edited || false,
+                likeCount: Number(p.likeCount) || 0,
+                likes: p.likes || {},
+                adminId: p.adminId || adminId,
+                targetRole: p.targetRole || "all",
+                adminName: p.adminName || admin.name || "Admin",
+                adminProfile: p.adminProfile || admin.profileImage || "/default-profile.png",
+                isVideo: isVideoMediaUrl(mediaUrl, p.mediaType),
+              };
+            })
+            .sort((a, b) => b.parsedTime - a.parsedTime);
+
+          if (isCurrentRequest()) {
+            setPosts(mappedPosts);
+          }
+
+          if (myPostsCacheKey) {
+            try {
+              localStorage.setItem(myPostsCacheKey, JSON.stringify(mappedPosts.slice(0, 120)));
+            } catch (error) {
+              // Ignore localStorage write issues.
+            }
+          }
+        } catch (fallbackErr) {
+          // Keep existing cached posts if fallback also fails.
+        }
+      }
+
       console.error("Error fetching posts:", err.response?.data || err);
     } finally {
       if (isCurrentRequest()) {

@@ -21,6 +21,12 @@ import { getRtdbRoot } from "../../api/rtdbScope";
 import Sidebar from "../Sidebar";
 import ProfileAvatar from "../ProfileAvatar";
 import QuickLessonPlanCheckModal from "./QuickLessonPlanCheckModal";
+import { buildChatSummaryPath, buildChatSummaryUpdate } from "../../utils/chatRtdb";
+import {
+  clearCachedChatSummary,
+  fetchTeacherConversationSummaries,
+  loadUserRecordsByIds,
+} from "../../utils/teacherData";
 
 const RTDB_BASE = getRtdbRoot();
 const DEFAULT_PREFERENCES = {
@@ -102,45 +108,87 @@ const saveSeenPost = (teacherId, postId) => {
   }
 };
 
-const isRecordObject = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
+const readFileAsDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result || "");
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 
-const resolveTeacherUserNode = async (teacher) => {
-  const directUserKey = String(teacher?.userId || "").trim();
-  const directUsername = String(teacher?.username || "").trim();
+const loadImageFromFile = (file) =>
+  new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Failed to load image file"));
+    };
+    image.src = objectUrl;
+  });
 
-  if (!directUserKey && !directUsername) {
-    throw new Error("Teacher user reference is missing.");
+const optimizeProfileImageFile = async (
+  file,
+  { maxWidth = 960, maxHeight = 960, quality = 0.78, minimumSavingsRatio = 0.95 } = {}
+) => {
+  if (!file || typeof document === "undefined") {
+    return file;
   }
 
-  if (directUserKey) {
-    const directResponse = await axios.get(`${RTDB_BASE}/Users/${encodeURIComponent(directUserKey)}.json`);
-    const directRecord = directResponse.data;
-    const directMatches =
-      isRecordObject(directRecord) &&
-      (String(directRecord.userId || "").trim() === directUserKey ||
-        String(directRecord.username || "").trim() === directUsername);
-
-    if (directMatches) {
-      return { key: directUserKey, record: directRecord };
-    }
+  const mimeType = String(file.type || "").toLowerCase();
+  if (!mimeType.startsWith("image/")) {
+    return file;
   }
 
-  const usersResponse = await axios.get(`${RTDB_BASE}/Users.json`);
-  const users = isRecordObject(usersResponse.data) ? usersResponse.data : {};
+  const image = await loadImageFromFile(file);
+  let width = image.naturalWidth || image.width;
+  let height = image.naturalHeight || image.height;
 
-  for (const [nodeKey, userRecord] of Object.entries(users)) {
-    if (!isRecordObject(userRecord)) continue;
+  const ratio = Math.min(maxWidth / width, maxHeight / height, 1);
+  width = Math.max(1, Math.round(width * ratio));
+  height = Math.max(1, Math.round(height * ratio));
 
-    const matchesUserId = directUserKey && String(userRecord.userId || "").trim() === directUserKey;
-    const matchesUsername = directUsername && String(userRecord.username || "").trim() === directUsername;
-    const matchesNodeKey = directUserKey && String(nodeKey || "").trim() === directUserKey;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
 
-    if (matchesUserId || matchesUsername || matchesNodeKey) {
-      return { key: nodeKey, record: userRecord };
-    }
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return file;
   }
 
-  throw new Error("Teacher user node not found.");
+  context.drawImage(image, 0, 0, width, height);
+
+  const outputBlob = await new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          reject(new Error("Profile image compression failed"));
+          return;
+        }
+        resolve(blob);
+      },
+      "image/jpeg",
+      quality
+    );
+  });
+
+  if (ratio === 1 && Number(outputBlob.size || 0) >= Number(file.size || 0) * minimumSavingsRatio) {
+    return file;
+  }
+
+  const nextName = `${String(file.name || "profile")
+    .replace(/\.[^.]+$/, "")
+    .replace(/[^A-Za-z0-9._-]+/g, "_") || "profile"}.jpg`;
+
+  return new File([outputBlob], nextName, {
+    type: "image/jpeg",
+    lastModified: Date.now(),
+  });
 };
 
 function SectionHeader({ kicker, title, description, icon, actions }) {
@@ -273,11 +321,15 @@ export default function SettingsPagePremium() {
     setActivity((previous) => ({ ...previous, loading: true, error: "" }));
 
     try {
-      const [postsRes, adminsRes, usersRes, chatsRes] = await Promise.all([
+      const [postsRes, adminsRes, conversationSummaries] = await Promise.all([
         axios.get(`${API_BASE}/get_posts`),
         axios.get(`${RTDB_BASE}/School_Admins.json`),
-        axios.get(`${RTDB_BASE}/Users.json`),
-        axios.get(`${RTDB_BASE}/Chats.json`),
+        fetchTeacherConversationSummaries({
+          rtdbBase: RTDB_BASE,
+          schoolCode: activeTeacher.schoolCode,
+          teacherUserId: activeTeacher.userId,
+          unreadOnly: true,
+        }),
       ]);
 
       let postsData = postsRes.data || [];
@@ -286,32 +338,39 @@ export default function SettingsPagePremium() {
       }
 
       const schoolAdmins = adminsRes.data || {};
-      const users = usersRes.data || {};
-      const chats = chatsRes.data || {};
       const seenPosts = getSeenPosts(activeTeacher.userId);
-      const usersByPushKey = {};
-      const usersByUserId = {};
 
-      Object.entries(users).forEach(([pushKey, userValue]) => {
-        const userRecord = userValue && typeof userValue === "object"
-          ? { ...userValue, pushKey }
-          : { userId: pushKey, pushKey };
+      const unreadPosts = postsData
+        .slice()
+        .sort((left, right) => normalizeTimestamp(right.time || right.createdAt) - normalizeTimestamp(left.time || left.createdAt))
+        .filter((post) => post.postId && !seenPosts.includes(post.postId))
+        .slice(0, 8);
 
-        usersByPushKey[pushKey] = userRecord;
-        if (userRecord.userId) {
-          usersByUserId[userRecord.userId] = userRecord;
-        }
+      const adminUserIds = [...new Set(
+        unreadPosts
+          .map((post) => {
+            const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
+            return adminId ? schoolAdmins?.[adminId]?.userId : "";
+          })
+          .filter(Boolean)
+      )];
+
+      const usersByUserId = await loadUserRecordsByIds({
+        rtdbBase: RTDB_BASE,
+        schoolCode: activeTeacher.schoolCode,
+        userIds: adminUserIds,
       });
 
       const resolveAdminInfo = (post) => {
         const adminId = post.adminId || post.posterAdminId || post.poster || post.admin || null;
         if (adminId && schoolAdmins[adminId]) {
           const schoolAdmin = schoolAdmins[adminId];
-          const mappedUser = usersByUserId[schoolAdmin.userId] || usersByPushKey[schoolAdmin.userId] || null;
+          const mappedUser = usersByUserId[schoolAdmin.userId] || null;
           return {
             name: mappedUser?.name || schoolAdmin.name || post.adminName || "Admin",
             profile:
               mappedUser?.profileImage ||
+              mappedUser?.profile ||
               schoolAdmin.profileImage ||
               post.adminProfile ||
               "/default-profile.png",
@@ -324,12 +383,7 @@ export default function SettingsPagePremium() {
         };
       };
 
-      const alerts = postsData
-        .slice()
-        .sort((left, right) => normalizeTimestamp(right.time || right.createdAt) - normalizeTimestamp(left.time || left.createdAt))
-        .filter((post) => post.postId && !seenPosts.includes(post.postId))
-        .slice(0, 8)
-        .map((post) => {
+      const alerts = unreadPosts.map((post) => {
           const adminInfo = resolveAdminInfo(post);
           return {
             id: post.postId,
@@ -341,40 +395,17 @@ export default function SettingsPagePremium() {
           };
         });
 
-      const conversations = Object.entries(chats)
-        .map(([chatId, chat]) => {
-          const unreadForMe = Number(chat?.unread?.[activeTeacher.userId] || 0);
-          if (!unreadForMe) return null;
-
-          const otherParticipantId = Object.keys(chat?.participants || {}).find(
-            (participantId) => participantId !== activeTeacher.userId
-          );
-          if (!otherParticipantId) return null;
-
-          const otherUser = usersByPushKey[otherParticipantId] || usersByUserId[otherParticipantId] || {
-            pushKey: otherParticipantId,
-            userId: otherParticipantId,
-            name: otherParticipantId,
-            profileImage: "/default-profile.png",
-          };
-
-          return {
-            chatId,
-            type: "message",
-            actorName: otherUser.name || otherUser.username || otherParticipantId,
-            actorProfile: otherUser.profileImage || otherUser.profile || "/default-profile.png",
-            headline: chat?.lastMessage?.text || "Unread conversation",
-            unreadCount: unreadForMe,
-            timestamp: normalizeTimestamp(chat?.lastMessage?.timeStamp || chat?.lastMessage?.time),
-            contact: {
-              pushKey: otherUser.pushKey || otherParticipantId,
-              userId: otherUser.userId || otherParticipantId,
-              name: otherUser.name || otherUser.username || otherParticipantId,
-              profileImage: otherUser.profileImage || otherUser.profile || "/default-profile.png",
-            },
-          };
-        })
-        .filter(Boolean)
+      const conversations = (conversationSummaries || [])
+        .map((conversation) => ({
+          chatId: conversation.chatId,
+          type: "message",
+          actorName: conversation.displayName || conversation.contact?.name || "User",
+          actorProfile: conversation.profile || conversation.contact?.profileImage || "/default-profile.png",
+          headline: conversation.lastMessageText || "Unread conversation",
+          unreadCount: Number(conversation.unreadForMe || 0),
+          timestamp: normalizeTimestamp(conversation.lastMessageTime),
+          contact: conversation.contact,
+        }))
         .sort((left, right) => right.timestamp - left.timestamp)
         .slice(0, 8);
 
@@ -469,9 +500,12 @@ export default function SettingsPagePremium() {
   );
 
   const pendingPasswordScore = useMemo(() => scorePassword(password), [password]);
+  const hasConfiguredPassword = Boolean(teacher?.hasPasswordSet || teacher?.passwordUpdatedAt);
   const effectivePasswordScore = password
     ? pendingPasswordScore
-    : scorePassword(String(teacher?.password || ""));
+    : hasConfiguredPassword
+      ? 3
+      : 0;
   const hasProfileImage = Boolean(profilePreview && profilePreview !== "/default-profile.png");
 
   const securityScore = useMemo(() => {
@@ -524,17 +558,24 @@ export default function SettingsPagePremium() {
     [effectivePasswordScore, hasProfileImage, teacher?.name, teacher?.teacherId, teacher?.userId, teacher?.username]
   );
 
-  const handleFileChange = (event) => {
-    const file = event.target.files?.[0];
+  const handleFileChange = async (event) => {
+    const input = event.target;
+    const file = input.files?.[0];
     if (!file) return;
 
-    setSelectedFile(file);
+    try {
+      const optimizedFile = await optimizeProfileImageFile(file);
+      setSelectedFile(optimizedFile);
+      setProfilePreview((await readFileAsDataUrl(optimizedFile)) || "/default-profile.png");
+    } catch (error) {
+      console.warn("Profile image optimization failed:", error);
+      setSelectedFile(file);
+      setProfilePreview((await readFileAsDataUrl(file)) || "/default-profile.png");
+    }
 
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setProfilePreview(reader.result || "/default-profile.png");
-    };
-    reader.readAsDataURL(file);
+    if (input) {
+      input.value = "";
+    }
   };
 
   const handleProfileSubmit = async () => {
@@ -547,21 +588,24 @@ export default function SettingsPagePremium() {
     setSavingSection("profile");
 
     try {
-      const base64Image = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result);
-        reader.onerror = reject;
-        reader.readAsDataURL(selectedFile);
-      });
+      const formData = new FormData();
+      formData.append("profile", selectedFile);
 
-      const { key: userNodeKey } = await resolveTeacherUserNode(teacher);
+      const response = await axios.post(
+        `${API_BASE}/users/${encodeURIComponent(teacher.userId)}/profile-image`,
+        formData
+      );
 
-      await axios.patch(`${RTDB_BASE}/Users/${encodeURIComponent(userNodeKey)}.json`, { profileImage: base64Image });
+      const uploadedProfileImage = String(response?.data?.profileImage || "").trim();
+      if (!uploadedProfileImage) {
+        throw new Error("Profile image upload did not return a URL.");
+      }
 
-      const updatedTeacher = { ...teacher, profileImage: base64Image };
+      const updatedTeacher = { ...teacher, profileImage: uploadedProfileImage };
       localStorage.setItem("teacher", JSON.stringify(updatedTeacher));
+      localStorage.setItem(`teacher_profile_image_${teacher.userId}`, uploadedProfileImage);
       setTeacher(updatedTeacher);
-      setProfilePreview(base64Image);
+      setProfilePreview(uploadedProfileImage);
       setSelectedFile(null);
       flashMessage("success", "Profile image updated successfully.");
     } catch (error) {
@@ -574,6 +618,10 @@ export default function SettingsPagePremium() {
 
   const handlePasswordChange = async () => {
     if (!teacher?.userId) return;
+    if (!teacher?.username || !teacher?.schoolCode) {
+      flashMessage("error", "Teacher account context is incomplete. Please sign in again.");
+      return;
+    }
     if (!oldPassword || !password || !confirmPassword) {
       flashMessage("warning", "Fill old, new, and confirm password fields.");
       return;
@@ -594,21 +642,19 @@ export default function SettingsPagePremium() {
     setSavingSection("security");
 
     try {
-      const { key: userNodeKey, record: userRecord } = await resolveTeacherUserNode(teacher);
-      const savedPassword = String(userRecord?.password ?? teacher?.password ?? "");
+      const response = await axios.post(`${API_BASE}/teacher/change-password`, {
+        schoolCode: teacher.schoolCode,
+        userId: teacher.userId,
+        username: teacher.username,
+        oldPassword,
+        newPassword: password,
+      });
 
-      if (!savedPassword) {
-        flashMessage("error", "Current password could not be verified. Please log in again.");
-        return;
-      }
-
-      if (oldPassword !== savedPassword) {
-        flashMessage("error", "Old password is incorrect.");
-        return;
-      }
-
-      await axios.patch(`${RTDB_BASE}/Users/${encodeURIComponent(userNodeKey)}.json`, { password });
-      const updatedTeacher = { ...teacher, password };
+      const updatedTeacher = {
+        ...teacher,
+        hasPasswordSet: Boolean(response?.data?.hasPasswordSet ?? true),
+        passwordUpdatedAt: response?.data?.passwordUpdatedAt || new Date().toISOString(),
+      };
       localStorage.setItem("teacher", JSON.stringify(updatedTeacher));
       setTeacher(updatedTeacher);
       setOldPassword("");
@@ -617,7 +663,10 @@ export default function SettingsPagePremium() {
       flashMessage("success", "Password updated successfully.");
     } catch (error) {
       console.error("Error updating password:", error);
-      flashMessage("error", "Password update failed.");
+      flashMessage(
+        "error",
+        String(error?.response?.data?.message || "").trim() || "Password update failed."
+      );
     } finally {
       setSavingSection("");
     }
@@ -644,7 +693,17 @@ export default function SettingsPagePremium() {
       }));
 
       try {
-        await axios.put(`${RTDB_BASE}/Chats/${item.chatId}/unread/${teacher.userId}.json`, null);
+        await axios.patch(
+          `${RTDB_BASE}/${buildChatSummaryPath(teacher.userId, item.chatId)}.json`,
+          buildChatSummaryUpdate({
+            chatId: item.chatId,
+            otherUserId: item.contact?.userId,
+            unreadCount: 0,
+            lastMessageSeen: true,
+            lastMessageSeenAt: Date.now(),
+          })
+        );
+        clearCachedChatSummary({ rtdbBase: RTDB_BASE, chatId: item.chatId, teacherUserId: teacher.userId });
       } catch (error) {
         console.error("Failed to clear unread messages:", error);
       }
@@ -655,9 +714,9 @@ export default function SettingsPagePremium() {
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("teacher");
-    navigate("/login");
+  const handleLogout = async () => {
+    await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
+    navigate("/login", { replace: true });
   };
 
   if (!teacher) return null;

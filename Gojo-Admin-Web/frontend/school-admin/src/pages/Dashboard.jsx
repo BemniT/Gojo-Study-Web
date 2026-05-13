@@ -10,6 +10,12 @@ import { BACKEND_BASE, FIREBASE_DATABASE_URL } from "../config.js";
 import EthiopicCalendar from "ethiopic-calendar";
 import ProfileAvatar from "../components/ProfileAvatar";
 import { formatFileSize, optimizePostMedia } from "../utils/postMedia";
+import {
+  buildChatSummaryPath,
+  buildChatSummaryUpdate,
+  buildOwnerChatSummariesPath,
+  normalizeChatSummaryValue,
+} from "../utils/chatRtdb";
 
 
 const ETHIOPIAN_MONTHS = [
@@ -321,10 +327,6 @@ const hasConversationUserSentMessage = (chatValue, userId) => {
     return false;
   }
 
-  if (String(chatValue?.lastMessage?.senderId || "").trim() === normalizedUserId) {
-    return true;
-  }
-
   const messages = chatValue?.messages;
   if (!messages || typeof messages !== "object") {
     return false;
@@ -333,6 +335,23 @@ const hasConversationUserSentMessage = (chatValue, userId) => {
   return Object.values(messages).some(
     (messageValue) => String(messageValue?.senderId || "").trim() === normalizedUserId
   );
+};
+
+const resolveConversationOtherUserId = (summary = {}, currentUserId = "") => {
+  const explicitOtherUserId = String(summary?.otherUserId || "").trim();
+  if (explicitOtherUserId) {
+    return explicitOtherUserId;
+  }
+
+  const normalizedCurrentUserId = String(currentUserId || "").trim();
+  if (!normalizedCurrentUserId) {
+    return "";
+  }
+
+  return String(summary?.chatId || "")
+    .split("_")
+    .map((value) => String(value || "").trim())
+    .find((participantId) => participantId && participantId !== normalizedCurrentUserId) || "";
 };
 
 const normalizeConversationContactType = (value) => {
@@ -894,6 +913,54 @@ function Dashboard() {
     return fallbackValue;
   };
 
+  const readMergedSchoolUserRecord = async (candidateCodes, userId) => {
+    const normalizedUserId = String(userId || "").trim();
+    if (!normalizedUserId) {
+      return {};
+    }
+
+    const cacheKey = `${uniqueNonEmptyValues(candidateCodes).join("|")}::${normalizedUserId}`;
+    if (conversationUserCacheRef.current.has(cacheKey)) {
+      return conversationUserCacheRef.current.get(cacheKey) || {};
+    }
+
+    const encodedUserId = encodeURIComponent(normalizedUserId);
+
+    const readUserFromRoot = async (dbRoot) => {
+      const directRecord = await axios
+        .get(`${dbRoot}/Users/${encodedUserId}.json`, { timeout: 3500 })
+        .then((response) => response.data)
+        .catch(() => null);
+
+      if (directRecord && typeof directRecord === "object" && !Array.isArray(directRecord) && Object.keys(directRecord).length > 0) {
+        return directRecord;
+      }
+
+      const queriedUsers = await axios
+        .get(`${dbRoot}/Users.json?orderBy=%22userId%22&equalTo=%22${encodedUserId}%22&limitToFirst=1`, { timeout: 3500 })
+        .then((response) => response.data)
+        .catch(() => null);
+
+      if (queriedUsers && typeof queriedUsers === "object" && !Array.isArray(queriedUsers)) {
+        return Object.values(queriedUsers).find(
+          (userRecord) => userRecord && typeof userRecord === "object"
+        ) || null;
+      }
+
+      return null;
+    };
+
+    const schoolDbRoots = buildSchoolDbRoots(candidateCodes);
+    const candidateRecords = await Promise.all(schoolDbRoots.map((schoolDbRoot) => readUserFromRoot(schoolDbRoot)));
+    const resolvedRecord =
+      candidateRecords.find((userRecord) => userRecord && typeof userRecord === "object") ||
+      (await readUserFromRoot(DB_URL)) ||
+      {};
+
+    conversationUserCacheRef.current.set(cacheKey, resolvedRecord);
+    return resolvedRecord;
+  };
+
   const [posts, setPosts] = useState(initialCachedPosts);
   const [postsLoading, setPostsLoading] = useState(initialCachedPosts.length === 0 && Boolean(initialSchoolCode));
   const [postsInitialized, setPostsInitialized] = useState(initialCachedPosts.length > 0);
@@ -908,6 +975,7 @@ function Dashboard() {
   const postsFetchRequestIdRef = useRef(0);
   const schoolScopeCacheRef = useRef(new Map());
   const schoolScopePromiseCacheRef = useRef(new Map());
+  const conversationUserCacheRef = useRef(new Map());
 
   const [unreadMessages, setUnreadMessages] = useState([]);
   const [showMessengerDropdown, setShowMessengerDropdown] = useState(false);
@@ -1175,10 +1243,7 @@ function Dashboard() {
     };
 
     if (!effectiveSchoolCode) {
-      clearCachedPosts();
-      setPosts([]);
       setPostsLoading(false);
-      setPostsInitialized(true);
       return;
     }
 
@@ -1367,23 +1432,7 @@ function Dashboard() {
           return apiPosts;
         }
 
-        const schoolDbRoots = buildSchoolDbRoots(normalizedCandidateCodes);
-        const firebasePostsResponses = await Promise.all(
-          schoolDbRoots.map((schoolDbRoot) =>
-            safeGet(
-              `${schoolDbRoot}/Posts.json`,
-              {
-                params: { orderBy: '"$key"', limitToLast: DASHBOARD_POST_FETCH_LIMIT },
-                timeout: 4500,
-              },
-              {}
-            )
-          )
-        );
-
-        return mergeUniquePosts(
-          firebasePostsResponses.flatMap((response) => normalizePostsNode(response?.data || {}))
-        );
+        return [];
       };
 
       const cachedPostsResult = readCachedPosts();
@@ -1421,25 +1470,6 @@ function Dashboard() {
         );
       }
 
-      if (sourcePosts.length === 0) {
-        const [legacyApiPostsRes, legacyFirebasePostsRes] = await Promise.all([
-          safeGet(`${API_BASE}/get_posts`, { timeout: 4500 }, []),
-          safeGet(
-            `${DB_URL}/Posts.json`,
-            {
-              params: { orderBy: '"$key"', limitToLast: DASHBOARD_POST_FETCH_LIMIT },
-              timeout: 4500,
-            },
-            {}
-          ),
-        ]);
-
-        sourcePosts = mergeUniquePosts(
-          normalizePostsResponse(legacyApiPostsRes.data),
-          normalizePostsNode(legacyFirebasePostsRes.data || {})
-        );
-      }
-
       const fastPosts = toFastRenderablePosts(sourcePosts);
       const cacheCodesToUpdate = uniqueNonEmptyValues([
         ...initialCacheCodes,
@@ -1448,12 +1478,9 @@ function Dashboard() {
 
       if (fastPosts.length > 0) {
         writeCachedPosts(fastPosts, cacheCodesToUpdate);
-      } else {
-        clearCachedPosts(cacheCodesToUpdate);
-      }
-
-      if (isCurrentRequest()) {
-        setPosts(fastPosts);
+        if (isCurrentRequest()) {
+          setPosts(fastPosts);
+        }
       }
     } catch (err) {
       if (postsFetchRequestIdRef.current === requestId) {
@@ -1479,57 +1506,24 @@ function Dashboard() {
         schoolScopeCode || schoolCode || admin.schoolCode || _storedAdmin.schoolCode || ""
       );
 
-      const [usersData, chatsData] = await Promise.all([
-        readMergedSchoolNode(schoolCodeCandidates, "Users", {}),
-        readMergedSchoolNode(schoolCodeCandidates, "Chats", {}),
-      ]);
+      const ownerSummariesData = await readMergedSchoolNode(
+        schoolCodeCandidates,
+        buildOwnerChatSummariesPath(adminUserId),
+        {}
+      );
 
-      const usersByKey = usersData && typeof usersData === "object" ? usersData : {};
-      const chatsMap = chatsData && typeof chatsData === "object" ? chatsData : {};
-      const usersByUserId = {};
-      const userKeyByUserId = {};
+      const summaryEntries = Object.entries(ownerSummariesData && typeof ownerSummariesData === "object" ? ownerSummariesData : {})
+        .map(([chatId, summaryValue]) => normalizeChatSummaryValue(summaryValue, { chatId }))
+        .filter((summary) => String(summary?.chatId || "").trim());
 
-      Object.entries(usersByKey).forEach(([userKey, userNode]) => {
-        const normalizedUserId = String(userNode?.userId || userKey || "").trim();
-        if (!normalizedUserId) {
-          return;
-        }
-
-        usersByUserId[normalizedUserId] = userNode;
-        userKeyByUserId[normalizedUserId] = userKey;
-      });
-
-      const nextConversations = Object.entries(chatsMap)
-        .map(([chatId, chatValue]) => {
-          const chat = chatValue && typeof chatValue === "object" ? chatValue : null;
-          if (!chat) {
-            return null;
-          }
-
-          const participants = chat.participants || {};
-          const participantKeys = Object.keys(participants || {});
-          if (!participantKeys.includes(adminUserId)) {
-            return null;
-          }
-
-          if (!hasConversationUserSentMessage(chat, adminUserId)) {
-            return null;
-          }
-
-          const otherParticipantKey = participantKeys.find(
-            (participantKey) => String(participantKey || "").trim() !== String(adminUserId).trim()
-          );
-          if (!otherParticipantKey) {
-            return null;
-          }
-
-          const userPushKey = userKeyByUserId[otherParticipantKey];
-          const fallbackUserRecord = usersByUserId[otherParticipantKey] || usersByKey[otherParticipantKey] || usersByKey[userPushKey] || {};
-          const otherUserId = String(fallbackUserRecord?.userId || otherParticipantKey || "").trim();
+      const nextConversations = (await Promise.all(
+        summaryEntries.map(async (summary) => {
+          const otherUserId = resolveConversationOtherUserId(summary, adminUserId);
           if (!otherUserId) {
             return null;
           }
 
+          const fallbackUserRecord = await readMergedSchoolUserRecord(schoolCodeCandidates, otherUserId);
           if (Object.keys(fallbackUserRecord).length > 0 && !isActiveEntity(fallbackUserRecord)) {
             return null;
           }
@@ -1537,9 +1531,7 @@ function Dashboard() {
           const normalizedRole = String(
             fallbackUserRecord?.role || fallbackUserRecord?.userType || ""
           ).trim().toLowerCase();
-          const inferredType = normalizeConversationContactType(
-            normalizedRole
-          ) || "teacher";
+          const inferredType = normalizeConversationContactType(normalizedRole) || "teacher";
           const officeRole = ["hr", "finance", "registerer", "registerers", "registrar"].includes(normalizedRole)
             ? normalizeConversationContactType(normalizedRole) === "management"
               ? normalizedRole === "registerers" || normalizedRole === "registrar"
@@ -1557,18 +1549,14 @@ function Dashboard() {
             otherUserId,
             "User"
           );
-          const lastMessage = chat.lastMessage || {};
-          const lastMessageText = pickFirstNonEmpty(
-            lastMessage?.text,
-            String(lastMessage?.type || "").toLowerCase() === "image" ? "Image" : ""
-          );
-          const unreadForMe = Number(chat?.unread?.[adminUserId] || 0);
+          const lastMessageText = pickFirstNonEmpty(summary.lastMessageText);
+          const unreadForMe = Number(summary.unreadCount || 0);
           const lastMessageTime = getConversationSortTime(
-            lastMessage?.timeStamp || lastMessage?.time || chat?.updatedAt || chat?.createdAt || 0
+            summary.lastMessageTime || summary.updatedAt || 0
           );
 
           return {
-            chatId,
+            chatId: summary.chatId,
             contact: {
               id: otherUserId,
               userId: otherUserId,
@@ -1582,8 +1570,12 @@ function Dashboard() {
             lastMessageText,
             lastMessageTime,
             unreadForMe,
+            lastSenderId: summary.lastSenderId || "",
+            lastMessageSeen: Boolean(summary.lastMessageSeen),
+            lastMessageSeenAt: summary.lastMessageSeenAt ?? null,
           };
         })
+      ))
         .filter(Boolean)
         .sort((leftConversation, rightConversation) => {
           if ((rightConversation?.lastMessageTime || 0) !== (leftConversation?.lastMessageTime || 0)) {
@@ -1623,13 +1615,35 @@ function Dashboard() {
     setConversations((prevConversations) =>
       prevConversations.map((conversationItem) =>
         conversationItem.chatId === conversation.chatId
-          ? { ...conversationItem, unreadForMe: 0 }
+          ? {
+              ...conversationItem,
+              unreadForMe: 0,
+              ...(String(conversation.lastSenderId || "") !== String(adminUserId || "")
+                ? {
+                    lastMessageSeen: true,
+                    lastMessageSeenAt: Date.now(),
+                  }
+                : {}),
+            }
           : conversationItem
       )
     );
 
     try {
-      await axios.put(`${DB_ROOT}/Chats/${conversation.chatId}/unread/${adminUserId}.json`, null);
+      await axios.patch(
+        `${DB_ROOT}/${buildChatSummaryPath(adminUserId, conversation.chatId)}.json`,
+        buildChatSummaryUpdate({
+          chatId: conversation.chatId,
+          otherUserId: contact.userId || contact.id || "",
+          unreadCount: 0,
+          ...(String(conversation.lastSenderId || "") !== String(adminUserId || "") && !conversation.lastMessageSeen
+            ? {
+                lastMessageSeen: true,
+                lastMessageSeenAt: Date.now(),
+              }
+            : {}),
+        })
+      );
     } catch (err) {
       console.error("Failed to clear admin unread state:", err);
     }
@@ -2328,10 +2342,12 @@ function Dashboard() {
 
     setCalendarEventsLoading(true);
     try {
-      const res = await axios.get(`${DB_ROOT}/CalendarEvents.json`);
-      const rawEvents = res.data || {};
-      const normalizedEvents = Object.entries(rawEvents)
-        .map(([eventId, eventValue]) => normalizeCalendarEvent(eventId, eventValue))
+      const res = await axios.get(`${API_BASE}/calendar_events`, {
+        params: { schoolCode: schoolScopeCode },
+      });
+      const sourceEvents = Array.isArray(res?.data) ? res.data : [];
+      const normalizedEvents = sourceEvents
+        .map((eventItem) => normalizeCalendarEvent(eventItem.id, eventItem))
         .filter((eventItem) => eventItem.gregorianDate);
 
       setCalendarEvents(sortCalendarEvents(normalizedEvents));
@@ -2383,10 +2399,16 @@ function Dashboard() {
       };
 
       if (editingCalendarEventId) {
-        await axios.patch(`${DB_ROOT}/CalendarEvents/${editingCalendarEventId}.json`, payload);
+        await axios.patch(`${API_BASE}/calendar_events/${editingCalendarEventId}`, {
+          ...payload,
+          schoolCode: schoolScopeCode,
+        });
         setCalendarActionMessage("Calendar event updated successfully.");
       } else {
-        await axios.post(`${DB_ROOT}/CalendarEvents.json`, payload);
+        await axios.post(`${API_BASE}/calendar_events`, {
+          ...payload,
+          schoolCode: schoolScopeCode,
+        });
         setCalendarActionMessage("Calendar event saved successfully.");
       }
 
@@ -2453,7 +2475,9 @@ function Dashboard() {
 
     setCalendarEventSaving(true);
     try {
-      await axios.delete(`${DB_ROOT}/CalendarEvents/${eventItem.id}.json`);
+      await axios.delete(`${API_BASE}/calendar_events/${eventItem.id}`, {
+        params: { schoolCode: schoolScopeCode },
+      });
       if (editingCalendarEventId === eventItem.id) {
         setEditingCalendarEventId("");
         setCalendarEventForm({ title: "", category: "no-class", subType: "general", notes: "" });
