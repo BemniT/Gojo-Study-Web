@@ -1,287 +1,21 @@
-import React, { useEffect, useState, useRef } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import React, { useEffect, useState, useRef, useMemo, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import ProfileAvatar from "./ProfileAvatar";
 import { FaRegHeart, FaHeart, FaCalendarAlt, FaPlus, FaThumbsUp, FaBookOpen } from "react-icons/fa";
-import axios from "axios";
-import EthiopicCalendar from "ethiopic-calendar";
 import "../styles/global.css";
-import { API_BASE } from "../api/apiConfig";
+import "./Dashboard.css";
 import { RTDB_BASE_RAW } from "../api/rtdbScope";
 import QuickLessonPlanCheckModal from "./settings/QuickLessonPlanCheckModal";
-import { fetchCachedJson } from "../utils/rtdbCache";
-import { buildChatSummaryPath, buildChatSummaryUpdate } from "../utils/chatRtdb";
+import { useCalendar } from "./useCalendar";
 import {
   buildSchoolRtdbBase,
-  clearCachedChatSummary,
-  fetchTeacherConversationSummaries,
   loadUserRecordById,
-  readSessionResource,
   resolveTeacherSchoolCode,
-  writeSessionResource,
 } from "../utils/teacherData";
-
-const ETHIOPIAN_MONTHS = [
-  "Meskerem",
-  "Tikimt",
-  "Hidar",
-  "Tahsas",
-  "Tir",
-  "Yekatit",
-  "Megabit",
-  "Miyazya",
-  "Ginbot",
-  "Sene",
-  "Hamle",
-  "Nehase",
-  "Pagume",
-];
-
-const DEFAULT_ETHIOPIAN_SPECIAL_DAYS = [
-  { month: 1, day: 1, title: "Enkutatash", notes: "Ethiopian New Year." },
-  { month: 1, day: 17, title: "Meskel", notes: "Finding of the True Cross." },
-  { month: 4, day: 29, title: "Genna", notes: "Ethiopian Christmas." },
-  { month: 5, day: 11, title: "Timkat", notes: "Epiphany celebration." },
-  { month: 6, day: 23, title: "Adwa Victory Day", notes: "National remembrance day." },
-  { month: 8, day: 23, title: "International Labour Day", notes: "Public holiday." },
-  { month: 9, day: 1, title: "Patriots' Victory Day", notes: "Public holiday." },
-  { month: 9, day: 20, title: "Downfall of the Derg", notes: "National public holiday." },
-];
-
-const YEAR_SPECIFIC_GOVERNMENT_CLOSURES_GREGORIAN = {
-  2017: [
-    { date: "2025-03-31", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2025-06-06", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2025-09-05", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
-  ],
-  2018: [
-    { date: "2026-03-20", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2026-05-27", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2026-08-26", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
-  ],
-  2019: [
-    { date: "2027-03-10", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2027-05-17", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2027-08-15", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
-  ],
-  2020: [
-    { date: "2028-02-27", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2028-05-05", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2028-08-04", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
-  ],
-  2021: [
-    { date: "2029-02-14", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2029-04-24", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2029-07-24", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
-  ],
-  2022: [
-    { date: "2030-02-03", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2030-04-13", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2030-07-13", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
-  ],
-  2023: [
-    { date: "2031-01-23", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2031-04-02", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2031-07-02", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
-  ],
-  2024: [
-    { date: "2032-01-11", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2032-03-21", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2032-06-20", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
-  ],
-  2025: [
-    { date: "2032-12-31", title: "Eid al-Fitr", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2033-03-10", title: "Eid al-Adha", notes: "Government holiday (may vary by moon sighting)." },
-    { date: "2033-06-09", title: "Mawlid", notes: "Government holiday (may vary by moon sighting)." },
-  ],
-};
-
-const buildYearSpecificGovernmentClosures = (ethiopianYear) => {
-  const gregorianEvents = YEAR_SPECIFIC_GOVERNMENT_CLOSURES_GREGORIAN[ethiopianYear] || [];
-
-  return gregorianEvents
-    .map((eventItem) => {
-      const [year, month, day] = String(eventItem.date || "").split("-").map(Number);
-      if (!year || !month || !day) {
-        return null;
-      }
-
-      const ethiopianDate = EthiopicCalendar.ge(year, month, day);
-      if (ethiopianDate.year !== ethiopianYear) {
-        return null;
-      }
-
-      return {
-        month: ethiopianDate.month,
-        day: ethiopianDate.day,
-        title: eventItem.title,
-        notes: eventItem.notes,
-      };
-    })
-    .filter(Boolean);
-};
-
-const getOrthodoxEasterDate = (gregorianYear) => {
-  const a = gregorianYear % 4;
-  const b = gregorianYear % 7;
-  const c = gregorianYear % 19;
-  const d = (19 * c + 15) % 30;
-  const e = (2 * a + 4 * b - d + 34) % 7;
-  const julianMonth = Math.floor((d + e + 114) / 31);
-  const julianDay = ((d + e + 114) % 31) + 1;
-
-  const julianDateAsGregorian = new Date(
-    gregorianYear,
-    julianMonth - 1,
-    julianDay
-  );
-  julianDateAsGregorian.setDate(julianDateAsGregorian.getDate() + 13);
-  return julianDateAsGregorian;
-};
-
-const buildMovableOrthodoxClosures = (ethiopianYear) => {
-  const movableEvents = [];
-  const seenEventKeys = new Set();
-
-  [ethiopianYear + 7, ethiopianYear + 8].forEach((gregorianYear) => {
-    const easterDate = getOrthodoxEasterDate(gregorianYear);
-    const goodFridayDate = new Date(easterDate);
-    goodFridayDate.setDate(goodFridayDate.getDate() - 2);
-
-    [
-      {
-        title: "Siklet",
-        notes: "Good Friday school closure.",
-        date: goodFridayDate,
-      },
-      {
-        title: "Fasika",
-        notes: "Orthodox Easter school closure.",
-        date: easterDate,
-      },
-    ].forEach((eventItem) => {
-      const ethDate = EthiopicCalendar.ge(
-        eventItem.date.getFullYear(),
-        eventItem.date.getMonth() + 1,
-        eventItem.date.getDate()
-      );
-
-      if (ethDate.year !== ethiopianYear) {
-        return;
-      }
-
-      const eventKey = `${ethDate.year}-${ethDate.month}-${ethDate.day}-${eventItem.title}`;
-      if (seenEventKeys.has(eventKey)) {
-        return;
-      }
-
-      seenEventKeys.add(eventKey);
-      movableEvents.push({
-        month: ethDate.month,
-        day: ethDate.day,
-        title: eventItem.title,
-        notes: eventItem.notes,
-      });
-    });
-  });
-
-  return movableEvents;
-};
-
-const buildDefaultCalendarEvents = (ethiopianYear) =>
-  [
-    ...DEFAULT_ETHIOPIAN_SPECIAL_DAYS,
-    ...buildMovableOrthodoxClosures(ethiopianYear),
-    ...buildYearSpecificGovernmentClosures(ethiopianYear),
-  ].map((eventItem) => {
-    const gregorianDate = EthiopicCalendar.eg(
-      ethiopianYear,
-      eventItem.month,
-      eventItem.day
-    );
-    const isoDate = `${gregorianDate.year}-${String(gregorianDate.month).padStart(
-      2,
-      "0"
-    )}-${String(gregorianDate.day).padStart(2, "0")}`;
-
-    return {
-      id: `default-${ethiopianYear}-${eventItem.month}-${eventItem.day}`,
-      title: eventItem.title,
-      type: "no-class",
-      category: "no-class",
-      subType: "general",
-      notes: eventItem.notes,
-      gregorianDate: isoDate,
-      ethiopianDate: {
-        year: ethiopianYear,
-        month: eventItem.month,
-        day: eventItem.day,
-      },
-      createdAt: "",
-      createdBy: "system-default",
-      isDefault: true,
-      showInUpcomingDeadlines: false,
-      source: "default-closure",
-    };
-  });
-
-const formatIsoDate = (year, month, day) => {
-  if (!year || !month || !day) return "";
-  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-};
-
-const toCalendarBucketKey = (isoDate) => {
-  const match = String(isoDate || "").trim().match(/^(\d{4}-\d{2})-/);
-  return match?.[1] || "";
-};
-
-const collectCalendarBucketKeysBetween = (startIsoDate, endIsoDate) => {
-  const startMatch = String(startIsoDate || "").trim().match(/^(\d{4})-(\d{2})-/);
-  const endMatch = String(endIsoDate || "").trim().match(/^(\d{4})-(\d{2})-/);
-  if (!startMatch || !endMatch) return [];
-
-  let currentYear = Number(startMatch[1]);
-  let currentMonth = Number(startMatch[2]);
-  const endYear = Number(endMatch[1]);
-  const endMonth = Number(endMatch[2]);
-  const keys = [];
-
-  while (currentYear < endYear || (currentYear === endYear && currentMonth <= endMonth)) {
-    keys.push(`${currentYear}-${String(currentMonth).padStart(2, "0")}`);
-    currentMonth += 1;
-    if (currentMonth > 12) {
-      currentMonth = 1;
-      currentYear += 1;
-    }
-  }
-
-  return keys;
-};
-
-const buildCalendarBucketKeys = ({
-  visibleMonthStartIsoDate,
-  visibleMonthEndIsoDate,
-  todayIsoDate,
-  deadlineEndIsoDate,
-}) => {
-  return [...new Set([
-    ...collectCalendarBucketKeysBetween(visibleMonthStartIsoDate, visibleMonthEndIsoDate),
-    ...collectCalendarBucketKeysBetween(todayIsoDate, deadlineEndIsoDate),
-  ])];
-};
-
-const toCalendarStoragePayload = (eventValue = {}) => ({
-  title: String(eventValue?.title || "").trim(),
-  type: String(eventValue?.type || "").trim(),
-  category: String(eventValue?.category || "no-class").trim(),
-  subType: String(eventValue?.subType || "general").trim(),
-  notes: String(eventValue?.notes || "").trim(),
-  gregorianDate: String(eventValue?.gregorianDate || "").trim(),
-  ethiopianDate: eventValue?.ethiopianDate || null,
-  createdAt: eventValue?.createdAt || "",
-  createdBy: eventValue?.createdBy || "",
-  showInUpcomingDeadlines: Boolean(eventValue?.showInUpcomingDeadlines),
-});
+import { getStoredTeacher, setStoredTeacher, getTeacherProfileFetchedAt, setTeacherProfileFetchedAt } from "../utils/useStoredTeacher";
+import { usePostsFeed } from "./usePostsFeed";
+import { useConversations } from "./useConversations";
 
 function getSafeProfileImage(profileImage) {
   if (!profileImage) return "/default-profile.png";
@@ -366,71 +100,83 @@ function readTeacherSettingsPreferences(teacherUserId) {
   }
 }
 
+const PRIMARY = "#007AFB";
+const BACKGROUND = "#FFFFFF";
+const ACCENT = "#00B6A9";
+const rightRailIconStyle = {
+  width: 34,
+  height: 34,
+  borderRadius: 10,
+  background: "#F8FAFC",
+  color: "var(--text-primary)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  border: "1px solid rgba(15, 23, 42, 0.08)",
+};
+const rightRailActionButtonStyle = {
+  height: 34,
+  padding: "0 12px",
+  borderRadius: 999,
+  border: "1px solid rgba(0, 122, 251, 0.18)",
+  background: "#007AFB",
+  color: "#ffffff",
+  fontSize: 11,
+  fontWeight: 800,
+  cursor: "pointer",
+};
+const rightRailSecondaryButtonStyle = {
+  height: 34,
+  padding: "0 12px",
+  borderRadius: 999,
+  border: "1px solid rgba(15, 23, 42, 0.08)",
+  background: "var(--surface-panel)",
+  color: "var(--text-primary)",
+  fontSize: 11,
+  fontWeight: 800,
+  cursor: "pointer",
+};
+const FEED_SECTION_STYLE = {
+  width: "100%",
+  maxWidth: 680,
+};
+const shellCardStyle = {
+  background: "var(--surface-panel)",
+  border: "1px solid var(--border-soft)",
+  boxShadow: "var(--shadow-soft)",
+};
+const MESSAGE_PREVIEW_LIMIT = 220;
+const CALENDAR_MANAGER_ROLES = new Set([
+  "registrar",
+  "registerer",
+  "admin",
+  "admins",
+  "school_admin",
+  "school_admins",
+]);
 export default function Dashboard() {
-  const PRIMARY = "#007AFB";
-  const BACKGROUND = "#FFFFFF";
-  const ACCENT = "#00B6A9";
-  const CALENDAR_MANAGER_ROLES = new Set([
-    "registrar",
-    "registerer",
-    "admin",
-    "admins",
-    "school_admin",
-    "school_admins",
-  ]);
-  const CALENDAR_WEEK_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 600);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const navigate = useNavigate();
   const [teacher, setTeacher] = useState(null);
-  const [posts, setPosts] = useState([]);
-  const [postsLoading, setPostsLoading] = useState(true);
-  const [expandedPostIds, setExpandedPostIds] = useState({});
-  const [pendingLikePostIds, setPendingLikePostIds] = useState({});
-  const [notifications, setNotifications] = useState([]);
-  const [highlightedPostId, setHighlightedPostId] = useState(null);
-  const [conversations, setConversations] = useState([]);
   const [resolvedSchoolCode, setResolvedSchoolCode] = useState("");
-  const [calendarViewDate, setCalendarViewDate] = useState(() => ({
-    year: EthiopicCalendar.ge(
-      new Date().getFullYear(),
-      new Date().getMonth() + 1,
-      new Date().getDate()
-    ).year,
-    month: EthiopicCalendar.ge(
-      new Date().getFullYear(),
-      new Date().getMonth() + 1,
-      new Date().getDate()
-    ).month,
-  }));
-  const [selectedCalendarIsoDate, setSelectedCalendarIsoDate] = useState("");
-  const [hoveredCalendarIsoDate, setHoveredCalendarIsoDate] = useState("");
-  const [showAllUpcomingDeadlines, setShowAllUpcomingDeadlines] = useState(false);
-  const [calendarEvents, setCalendarEvents] = useState([]);
-  const [calendarEventsLoading, setCalendarEventsLoading] = useState(false);
-  const [calendarEventForm, setCalendarEventForm] = useState({
-    title: "",
-    category: "no-class",
-    subType: "general",
-    notes: "",
-  });
-  const [calendarEventSaving, setCalendarEventSaving] = useState(false);
-  const [editingCalendarEventId, setEditingCalendarEventId] = useState("");
-  const [calendarActionMessage, setCalendarActionMessage] = useState("");
-  const [showCalendarEventModal, setShowCalendarEventModal] = useState(false);
-  const [calendarModalContext, setCalendarModalContext] = useState("calendar");
   const [quickLessonCheckOpen, setQuickLessonCheckOpen] = useState(false);
   const [quickLessonFeedback, setQuickLessonFeedback] = useState({ type: "", text: "" });
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [mobileTab, setMobileTab] = useState("feed");
   const [compactCards, setCompactCards] = useState(() =>
-    Boolean(readTeacherSettingsPreferences(JSON.parse(localStorage.getItem("teacher") || "{}").userId).compactCards)
+    Boolean(readTeacherSettingsPreferences(getStoredTeacher().userId).compactCards)
   );
   const postRefs = useRef({});
+
   const teacherId = teacher?.userId || null;
   const role = String(teacher?.role || teacher?.userType || "teacher").trim().toLowerCase().replace(/-/g, "_");
-  const canManageCalendar = CALENDAR_MANAGER_ROLES.has(role);
-  const isOverlayModalOpen = showCalendarEventModal || quickLessonCheckOpen;
+  const canManageCalendar = useMemo(
+    () => CALENDAR_MANAGER_ROLES.has(role),
+    [role]
+  );
   const schoolCode =
     teacher?.schoolCode ||
-    JSON.parse(localStorage.getItem("teacher") || "{}").schoolCode ||
+    getStoredTeacher().schoolCode ||
     "";
   const effectiveSchoolCode = String(
     resolvedSchoolCode ||
@@ -441,8 +187,8 @@ export default function Dashboard() {
     ? `${RTDB_BASE_RAW}/Platform1/Schools/${effectiveSchoolCode}`
     : RTDB_BASE_RAW;
 
-  const resolveSchoolCode = (candidateTeacher) => {
-    const storedTeacher = JSON.parse(localStorage.getItem("teacher") || "{}");
+  const resolveSchoolCode = useCallback((candidateTeacher) => {
+    const storedTeacher = getStoredTeacher();
     const directSchoolCode = String(candidateTeacher?.schoolCode || storedTeacher?.schoolCode || "").trim();
     if (directSchoolCode) {
       return directSchoolCode;
@@ -460,7 +206,121 @@ export default function Dashboard() {
 
     const inferredPrefix = usernameCandidate.replace(/[^A-Z]/g, "").slice(0, 3);
     return inferredPrefix;
-  };
+  }, []);
+
+  const getNormalizedTargetRole = useCallback((post) => {
+    if (!post || typeof post !== "object") {
+      return "";
+    }
+
+    const directTarget =
+      post.targetRole ??
+      post.TargetRole ??
+      post.targetrole ??
+      post.target ??
+      post.targetUserType ??
+      post.targetAudience ??
+      "";
+
+    if (Array.isArray(directTarget)) {
+      return directTarget
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter(Boolean)
+        .join(",");
+    }
+
+    return String(directTarget || "").trim().toLowerCase();
+  }, []);
+
+  const isTeacherVisiblePost = useCallback((post) => {
+    const normalizedTargetRole = getNormalizedTargetRole(post);
+    const targetParts = normalizedTargetRole
+      .split(/[\s,|]+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    if (targetParts.length === 0) {
+      return true;
+    }
+
+    if (targetParts.includes("all")) {
+      return true;
+    }
+
+    return targetParts.includes("teacher") || targetParts.includes("teachers");
+  }, [getNormalizedTargetRole]);
+
+  const {
+    posts,
+    postsLoading,
+    expandedPostIds,
+    setExpandedPostIds,
+    pendingLikePostIds,
+    notifications,
+    highlightedPostId,
+    fetchPostsAndAdmins,
+    handleLike,
+  } = usePostsFeed({
+    teacher,
+    effectiveSchoolCode,
+    schoolCode,
+    postRefs,
+    isTeacherVisiblePost,
+    getSafeProfileImage,
+    resolveSchoolCode,
+  });
+
+  const { conversations, fetchConversations, handleOpenConversation } = useConversations({
+    teacher,
+    effectiveSchoolCode,
+    DB_ROOT,
+    navigate,
+  });
+
+  const {
+    ETHIOPIAN_MONTHS,
+    CALENDAR_WEEK_DAYS,
+    calendarViewDate,
+    selectedCalendarIsoDate,
+    setSelectedCalendarIsoDate,
+    hoveredCalendarIsoDate,
+    setHoveredCalendarIsoDate,
+    showAllUpcomingDeadlines,
+    setShowAllUpcomingDeadlines,
+    calendarEventsLoading,
+    calendarEventForm,
+    setCalendarEventForm,
+    calendarEventSaving,
+    editingCalendarEventId,
+    calendarActionMessage,
+    calendarErrorMessage,
+    pendingDeleteEvent,
+    setPendingDeleteEvent,
+    showCalendarEventModal,
+    calendarModalContext,
+    calendarHighlightedDay,
+    calendarMonthLabel,
+    calendarMonthStartGregorian,
+    calendarMonthEndGregorian,
+    calendarDays,
+    monthlyCalendarEvents,
+    selectedCalendarDay,
+    selectedCalendarEvents,
+    upcomingDeadlineEvents,
+    visibleUpcomingDeadlineEvents,
+    getCalendarEventMeta,
+    formatCalendarDeadlineDate,
+    handleCalendarMonthChange,
+    handleCreateCalendarEvent,
+    handleEditCalendarEvent,
+    handleDeleteCalendarEvent,
+    handleConfirmedDelete,
+    handleOpenCalendarEventModal,
+    handleOpenDeadlineModal,
+    handleCloseCalendarEventModal,
+  } = useCalendar({ effectiveSchoolCode, DB_ROOT, teacherId, canManageCalendar });
+
+  const isOverlayModalOpen = showCalendarEventModal || quickLessonCheckOpen;
 
   useEffect(() => {
     let cancelled = false;
@@ -484,75 +344,22 @@ export default function Dashboard() {
     };
   }, [schoolCode]);
 
-  const getPostsCacheKey = (candidateSchoolCode) =>
-    `teacher_posts_cache_v2_${String(candidateSchoolCode || "global").toUpperCase()}`;
-  const getDashboardPostsSessionKey = (candidateSchoolCode) =>
-    `dashboard_posts_${String(candidateSchoolCode || "global").toUpperCase()}`;
-  const getDashboardConversationsSessionKey = (candidateSchoolCode, teacherUserId) =>
-    `dashboard_conversations_${String(candidateSchoolCode || "global").toUpperCase()}_${String(teacherUserId || "").trim()}`;
-  const getDashboardCalendarSessionKey = (candidateSchoolCode, bucketKeys = []) =>
-    `dashboard_calendar_${String(candidateSchoolCode || "global").toUpperCase()}_${(bucketKeys || []).filter(Boolean).join("_") || "none"}`;
-
-  const MESSAGE_PREVIEW_LIMIT = 220;
-
-  const getNormalizedTargetRole = (post) => {
-    if (!post || typeof post !== "object") {
-      return "";
-    }
-
-    const directTarget =
-      post.targetRole ??
-      post.TargetRole ??
-      post.targetrole ??
-      post.target ??
-      post.targetUserType ??
-      post.targetAudience ??
-      "";
-
-    if (Array.isArray(directTarget)) {
-      return directTarget
-        .map((value) => String(value || "").trim().toLowerCase())
-        .filter(Boolean)
-        .join(",");
-    }
-
-    return String(directTarget || "").trim().toLowerCase();
-  };
-
-  const isTeacherVisiblePost = (post) => {
-    const normalizedTargetRole = getNormalizedTargetRole(post);
-    const targetParts = normalizedTargetRole
-      .split(/[\s,|]+/)
-      .map((part) => part.trim())
-      .filter(Boolean);
-
-    if (targetParts.length === 0) {
-      return true;
-    }
-
-    if (targetParts.includes("all")) {
-      return true;
-    }
-
-    return targetParts.includes("teacher") || targetParts.includes("teachers");
-  };
-
-  const softPanelStyle = {
+  const softPanelStyle = useMemo(() => ({
     background: "#F8FAFC",
     border: "1px solid rgba(15, 23, 42, 0.06)",
     borderRadius: compactCards ? 8 : 10,
-  };
-  const rightRailCardStyle = {
+  }), [compactCards]);
+  const rightRailCardStyle = useMemo(() => ({
     background: "var(--surface-panel)",
     borderRadius: compactCards ? 10 : 12,
     boxShadow: "0 1px 2px rgba(15, 23, 42, 0.08), 0 8px 20px rgba(15, 23, 42, 0.04)",
     border: "1px solid rgba(15, 23, 42, 0.08)",
-  };
-  const widgetCardStyle = {
+  }), [compactCards]);
+  const widgetCardStyle = useMemo(() => ({
     ...rightRailCardStyle,
     padding: compactCards ? "10px" : "12px",
-  };
-  const smallStatStyle = {
+  }), [compactCards, rightRailCardStyle]);
+  const smallStatStyle = useMemo(() => ({
     padding: compactCards ? "8px 10px" : "10px 12px",
     borderRadius: compactCards ? 8 : 10,
     background: "#F8FAFC",
@@ -562,19 +369,8 @@ export default function Dashboard() {
     alignItems: "center",
     gap: 2,
     minWidth: compactCards ? 76 : 84,
-  };
-  const rightRailIconStyle = {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
-    background: "#F8FAFC",
-    color: "var(--text-primary)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    border: "1px solid rgba(15, 23, 42, 0.08)",
-  };
-  const rightRailIconButtonStyle = {
+  }), [compactCards]);
+  const rightRailIconButtonStyle = useMemo(() => ({
     width: 28,
     height: 28,
     borderRadius: 8,
@@ -584,8 +380,8 @@ export default function Dashboard() {
     cursor: "pointer",
     fontSize: 16,
     lineHeight: 1,
-  };
-  const rightRailPillStyle = {
+  }), []);
+  const rightRailPillStyle = useMemo(() => ({
     padding: "4px 8px",
     borderRadius: 999,
     background: "#F8FAFC",
@@ -593,46 +389,11 @@ export default function Dashboard() {
     fontSize: 9,
     color: "var(--text-secondary)",
     fontWeight: 800,
-  };
-  const rightRailActionButtonStyle = {
-    height: 34,
-    padding: "0 12px",
-    borderRadius: 999,
-    border: "1px solid rgba(0, 122, 251, 0.18)",
-    background: "#007AFB",
-    color: "#ffffff",
-    fontSize: 11,
-    fontWeight: 800,
-    cursor: "pointer",
-  };
-  const rightRailSecondaryButtonStyle = {
-    height: 34,
-    padding: "0 12px",
-    borderRadius: 999,
-    border: "1px solid rgba(15, 23, 42, 0.08)",
-    background: "var(--surface-panel)",
-    color: "var(--text-primary)",
-    fontSize: 11,
-    fontWeight: 800,
-    cursor: "pointer",
-  };
-  const FEED_SECTION_STYLE = {
-    width: "100%",
-    maxWidth: 680,
-  };
-  const shellCardStyle = {
-    background: "var(--surface-panel)",
-    border: "1px solid var(--border-soft)",
-    boxShadow: "var(--shadow-soft)",
-  };
-
-  useEffect(() => {
-    setCompactCards(Boolean(readTeacherSettingsPreferences(teacher?.userId).compactCards));
-  }, [teacher?.userId]);
+  }), []);
 
   useEffect(() => {
     const syncPreferences = () => {
-      const storedTeacher = JSON.parse(localStorage.getItem("teacher") || "{}");
+      const storedTeacher = getStoredTeacher();
       setCompactCards(Boolean(readTeacherSettingsPreferences(storedTeacher.userId).compactCards));
     };
 
@@ -644,315 +405,40 @@ export default function Dashboard() {
     };
   }, []);
 
-  const CALENDAR_EVENT_META = {
-    academic: {
-      label: "Academic",
-      color: "var(--success)",
-      background: "var(--success-soft)",
-      border: "var(--success-border)",
-    },
-    "no-class": {
-      label: "No class",
-      color: "var(--warning)",
-      background: "var(--warning-soft)",
-      border: "var(--warning-border)",
-    },
-  };
-
-  const getCalendarEventKey = (category) => {
-    if (category === "academic") return "academic";
-    return "no-class";
-  };
-
-  const normalizeCalendarEvent = (eventId, eventValue) => {
-    const legacyType = eventValue?.type || "academic";
-    const category =
-      eventValue?.category ||
-      (legacyType === "academic" ? "academic" : "no-class");
-
-    return {
-      id: eventId,
-      title: eventValue?.title || getCalendarEventMeta(category).label,
-      type: getCalendarEventKey(category),
-      category,
-      subType: "general",
-      notes: eventValue?.notes || "",
-      gregorianDate: eventValue?.gregorianDate || "",
-      ethiopianDate: eventValue?.ethiopianDate || null,
-      createdAt: eventValue?.createdAt || "",
-      createdBy: eventValue?.createdBy || "",
-      showInUpcomingDeadlines: Boolean(eventValue?.showInUpcomingDeadlines),
-      isDefault: false,
-    };
-  };
-
-  const normalizeCalendarEventsFromNode = (calendarNode = {}) =>
-    Object.entries(calendarNode || {})
-      .map(([eventId, eventValue]) => normalizeCalendarEvent(eventId, eventValue))
-      .filter((eventItem) => eventItem.gregorianDate);
-
-  const sortCalendarEvents = (events) =>
-    [...events].sort((leftEvent, rightEvent) => {
-      const dateComparison = String(leftEvent.gregorianDate || "").localeCompare(
-        String(rightEvent.gregorianDate || "")
-      );
-      if (dateComparison !== 0) return dateComparison;
-      return String(leftEvent.createdAt || "").localeCompare(
-        String(rightEvent.createdAt || "")
-      );
-    });
-
-  const getCalendarEventMeta = (category) => {
-    if (category === "academic") return CALENDAR_EVENT_META.academic;
-    return CALENDAR_EVENT_META["no-class"];
-  };
-
-  const formatCalendarDeadlineDate = (isoDate) => {
-    if (!isoDate) return "";
-    const parsedDate = new Date(`${isoDate}T00:00:00`);
-    if (Number.isNaN(parsedDate.getTime())) return "";
-    return parsedDate.toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-    });
-  };
-
   const formatPostTimestamp = (timestamp) => {
     if (!timestamp) return "";
 
     const parsedDate = new Date(timestamp);
     if (Number.isNaN(parsedDate.getTime())) return "";
 
-    const diffInMinutes = Math.max(
-      0,
-      Math.floor((Date.now() - parsedDate.getTime()) / 60000)
-    );
-
-    if (diffInMinutes < 1) return "Just now";
-    if (diffInMinutes < 60) return `${diffInMinutes}m`;
-
-    const diffInHours = Math.floor(diffInMinutes / 60);
-    if (diffInHours < 24) return `${diffInHours}h`;
-
-    const diffInDays = Math.floor(diffInHours / 24);
-    if (diffInDays < 7) return `${diffInDays}d`;
-
     const dateOptions =
       parsedDate.getFullYear() === new Date().getFullYear()
-        ? { month: "short", day: "numeric" }
+        ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }
         : { month: "short", day: "numeric", year: "numeric" };
 
     return parsedDate.toLocaleDateString("en-US", dateOptions);
   };
 
-  const getConversationSortTime = (rawValue) => {
-    if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
-      return rawValue;
-    }
-
-    if (typeof rawValue === "string") {
-      const trimmedValue = rawValue.trim();
-      if (!trimmedValue) {
-        return 0;
-      }
-
-      const numericValue = Number(trimmedValue);
-      if (Number.isFinite(numericValue)) {
-        return numericValue;
-      }
-
-      const parsedTime = new Date(trimmedValue).getTime();
-      if (!Number.isNaN(parsedTime)) {
-        return parsedTime;
-      }
-    }
-
-    return 0;
-  };
-
-  const hasTeacherSentMessage = (chatValue, teacherUserId) => {
-    const normalizedTeacherUserId = String(teacherUserId || "").trim();
-    if (!chatValue || !normalizedTeacherUserId) return false;
-
-    if (
-      String(chatValue?.lastMessage?.senderId || "").trim() ===
-      normalizedTeacherUserId
-    ) {
-      return true;
-    }
-
-    const messages = chatValue?.messages;
-    if (!messages || typeof messages !== "object") return false;
-
-    return Object.values(messages).some(
-      (messageValue) =>
-        String(messageValue?.senderId || "").trim() === normalizedTeacherUserId
-    );
-  };
-
-  const getSeenPosts = (teacherUserId) => {
-    return JSON.parse(localStorage.getItem(`seen_posts_${teacherUserId}`)) || [];
-  };
-
-  const saveSeenPost = (teacherUserId, postId) => {
-    const seen = getSeenPosts(teacherUserId);
-    if (!seen.includes(postId)) {
-      localStorage.setItem(
-        `seen_posts_${teacherUserId}`,
-        JSON.stringify([...seen, postId])
-      );
-    }
-  };
-
-  const fetchPostsAndAdmins = async (candidateTeacher = teacher) => {
-    const resolvedSchoolCode = resolveSchoolCode(candidateTeacher);
-    const cacheKey = getPostsCacheKey(resolvedSchoolCode);
-    const sessionCacheKey = getDashboardPostsSessionKey(resolvedSchoolCode);
-
-    setPostsLoading(true);
-
-    const cachedSessionPosts = readSessionResource(sessionCacheKey, {
-      ttlMs: 60 * 1000,
-    });
-    if (Array.isArray(cachedSessionPosts) && cachedSessionPosts.length > 0) {
-      setPosts(cachedSessionPosts);
-    }
-
-    const cachedPostsRaw = localStorage.getItem(cacheKey);
-    if (cachedPostsRaw) {
-      try {
-        const cachedPosts = JSON.parse(cachedPostsRaw);
-        if (Array.isArray(cachedPosts) && cachedPosts.length > 0) {
-          const teacherCachedPosts = cachedPosts.filter(isTeacherVisiblePost);
-          if (teacherCachedPosts.length > 0) {
-            setPosts(teacherCachedPosts);
-          }
-        }
-      } catch {
-        localStorage.removeItem(cacheKey);
-      }
-    }
-
-    try {
-      const postsResp = await axios.get(`${API_BASE}/get_posts`, {
-        params: resolvedSchoolCode
-          ? { schoolCode: resolvedSchoolCode, viewerRole: "teacher", limit: 25 }
-          : { viewerRole: "teacher", limit: 25 },
-        headers: resolvedSchoolCode ? { "X-School-Code": resolvedSchoolCode } : {},
-      });
-      let postsData = postsResp.data || [];
-      if (!Array.isArray(postsData) && typeof postsData === "object") {
-        postsData = Object.values(postsData);
-      }
-
-      const teacherVisiblePosts = postsData.filter(isTeacherVisiblePost);
-
-      const finalPosts = teacherVisiblePosts.map((post) => {
-        const postId = post.postId || post.id || post.key || "";
-        let likesArray = [];
-
-        if (Array.isArray(post.likes)) likesArray = post.likes;
-        else if (post.likes && typeof post.likes === "object") {
-          likesArray = Object.keys(post.likes);
-        }
-
-        const timeValue = post.time || post.timestamp || post.createdAt || null;
-
-        return {
-          ...post,
-          postId,
-          adminName: post.adminName || "Admin",
-          adminProfile: getSafeProfileImage(post.adminProfile),
-          time: timeValue,
-          likes: likesArray,
-          likeCount: post.likeCount || likesArray.length || 0,
-        };
-      });
-
-      finalPosts.sort((a, b) => {
-        const ta = a.time ? new Date(a.time).getTime() : 0;
-        const tb = b.time ? new Date(b.time).getTime() : 0;
-        return tb - ta;
-      });
-
-      setExpandedPostIds({});
-
-      setPosts(finalPosts);
-      if (finalPosts.length > 0) {
-        localStorage.setItem(cacheKey, JSON.stringify(finalPosts));
-        writeSessionResource(sessionCacheKey, finalPosts);
-      } else {
-        localStorage.removeItem(cacheKey);
-        writeSessionResource(sessionCacheKey, []);
-      }
-
-      const storedTeacher = JSON.parse(localStorage.getItem("teacher") || "{}");
-      const seenPosts = getSeenPosts(storedTeacher?.userId || candidateTeacher?.userId);
-
-      const notifs = finalPosts
-        .filter((p) => !seenPosts.includes(p.postId))
-        .slice(0, 5)
-        .map((p) => ({
-          id: p.postId,
-          title: p.message?.substring(0, 80) || "Untitled post",
-          adminName: p.adminName,
-          adminProfile: p.adminProfile,
-        }));
-
-      setNotifications(notifs);
-    } catch (err) {
-      console.error("Error fetching posts/admins handshake:", err);
-    } finally {
-      setPostsLoading(false);
-    }
-  };
-
-  const fetchConversations = async (currentTeacher = teacher) => {
-    try {
-      const t = currentTeacher || JSON.parse(localStorage.getItem("teacher"));
-      if (!t || !t.userId || !effectiveSchoolCode) {
-        setConversations([]);
-        return;
-      }
-
-      const sessionCacheKey = getDashboardConversationsSessionKey(effectiveSchoolCode, t.userId);
-      const cachedConversations = readSessionResource(sessionCacheKey, {
-        ttlMs: 20 * 1000,
-      });
-      if (Array.isArray(cachedConversations)) {
-        setConversations(cachedConversations);
-      }
-
-      const convs = await fetchTeacherConversationSummaries({
-        rtdbBase: DB_ROOT,
-        schoolCode: effectiveSchoolCode,
-        teacherUserId: t.userId,
-        unreadOnly: false,
-        limit: 5,
-      });
-
-      writeSessionResource(sessionCacheKey, convs);
-
-      setConversations(convs);
-    } catch (err) {
-      console.error("Error fetching conversations:", err);
-      setConversations([]);
-    }
-  };
-
   useEffect(() => {
-    const stored = JSON.parse(localStorage.getItem("teacher"));
-    if (!stored) {
+    const stored = getStoredTeacher();
+    if (!stored || !stored.userId) {
       navigate("/login");
       return;
     }
 
     const fetchTeacherProfile = async () => {
+      const fetchedAt = getTeacherProfileFetchedAt();
+      const tenMinutes = 10 * 60 * 1000;
+      if (stored && Date.now() - fetchedAt < tenMinutes) {
+        setTeacher(stored);
+        return;
+      }
+
       try {
-        const resolvedSchoolCode = await resolveTeacherSchoolCode(stored?.schoolCode);
+        const schoolCodeForFetch = resolvedSchoolCode || stored?.schoolCode || "";
         const teacherEntry = await loadUserRecordById({
-          rtdbBase: resolvedSchoolCode ? buildSchoolRtdbBase(resolvedSchoolCode) : DB_ROOT,
-          schoolCode: resolvedSchoolCode,
+          rtdbBase: schoolCodeForFetch ? buildSchoolRtdbBase(schoolCodeForFetch) : DB_ROOT,
+          schoolCode: schoolCodeForFetch,
           userId: stored.userId,
         });
 
@@ -960,34 +446,37 @@ export default function Dashboard() {
           const merged = {
             ...stored,
             ...teacherEntry,
-            schoolCode: resolvedSchoolCode || stored?.schoolCode || "",
+            schoolCode: schoolCodeForFetch || "",
           };
           setTeacher(merged);
-          localStorage.setItem("teacher", JSON.stringify(merged));
+          setTeacherProfileFetchedAt(Date.now());
+          setStoredTeacher(merged);
         } else {
           setTeacher(stored);
         }
       } catch (err) {
+        console.error("Error loading teacher profile:", err);
         setTeacher(stored);
       }
     };
 
     fetchTeacherProfile();
-  }, [navigate]);
+  }, [navigate, resolvedSchoolCode, DB_ROOT]);
 
   useEffect(() => {
-    const storedTeacher = JSON.parse(localStorage.getItem("teacher") || "{}");
-    if (!storedTeacher?.userId) {
+    const storedTeacher = getStoredTeacher();
+    const sourceTeacher = teacher?.userId ? teacher : storedTeacher;
+    if (!sourceTeacher?.userId) {
       return;
     }
 
     const teacherForScopedFetch = effectiveSchoolCode
-      ? { ...storedTeacher, schoolCode: effectiveSchoolCode }
-      : storedTeacher;
+      ? { ...sourceTeacher, schoolCode: effectiveSchoolCode }
+      : sourceTeacher;
 
     fetchPostsAndAdmins(teacherForScopedFetch);
     fetchConversations(teacherForScopedFetch);
-  }, [effectiveSchoolCode]);
+  }, [teacher, effectiveSchoolCode, fetchPostsAndAdmins, fetchConversations]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -1012,635 +501,75 @@ export default function Dashboard() {
     return () => window.clearTimeout(timeoutId);
   }, [quickLessonFeedback.text]);
 
-  const handleLike = async (postId) => {
-    const normalizedPostId = String(postId || "").trim();
-    if (!teacherId || !normalizedPostId || pendingLikePostIds[normalizedPostId]) return;
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
 
-    const currentPost = posts.find((post) => String(post?.postId || "") === normalizedPostId);
-    if (!currentPost) return;
-
-    const previousLikes = normalizePostLikes(currentPost.likes);
-    const wasLiked = Boolean(previousLikes[String(teacherId)]);
-    const nextLikes = { ...previousLikes };
-
-    if (wasLiked) {
-      delete nextLikes[String(teacherId)];
-    } else {
-      nextLikes[String(teacherId)] = true;
-    }
-
-    const optimisticLikeCount = Object.keys(nextLikes).length;
-    const cacheKey = getPostsCacheKey(effectiveSchoolCode || schoolCode);
-
-    setPendingLikePostIds((prev) => ({
-      ...prev,
-      [normalizedPostId]: true,
-    }));
-
-    setPosts((prevPosts) => {
-      const nextPosts = prevPosts.map((post) =>
-        post.postId === normalizedPostId
-          ? {
-              ...post,
-              likeCount: optimisticLikeCount,
-              likes: nextLikes,
-            }
-          : post
-      );
-
-      localStorage.setItem(cacheKey, JSON.stringify(nextPosts));
-      return nextPosts;
-    });
-
-    try {
-      const res = await axios.post(`${API_BASE}/like_post`, {
-        postId: normalizedPostId,
-        teacherId,
-        schoolCode,
-      });
-
-      if (res.data.success) {
-        const liked = res.data.liked;
-        const likeCount = res.data.likeCount;
-        const responseLikes = normalizePostLikes(res.data.likes);
-        const syncedLikes = Object.keys(responseLikes).length > 0 ? responseLikes : nextLikes;
-
-        setPosts((prevPosts) => {
-          const nextPosts = prevPosts.map((post) =>
-            post.postId === normalizedPostId
-              ? {
-                  ...post,
-                  likeCount: typeof likeCount === "number" ? likeCount : Object.keys(syncedLikes).length,
-                  likes: syncedLikes,
-                }
-              : post
-          );
-
-          localStorage.setItem(cacheKey, JSON.stringify(nextPosts));
-          return nextPosts;
-        });
-      }
-    } catch (err) {
-      console.error("Error liking post:", err);
-      setPosts((prevPosts) => {
-        const nextPosts = prevPosts.map((post) =>
-          post.postId === normalizedPostId
-            ? {
-                ...post,
-                likeCount: Object.keys(previousLikes).length,
-                likes: previousLikes,
-              }
-            : post
-        );
-
-        localStorage.setItem(cacheKey, JSON.stringify(nextPosts));
-        return nextPosts;
-      });
-    } finally {
-      setPendingLikePostIds((prev) => {
-        const next = { ...prev };
-        delete next[normalizedPostId];
-        return next;
-      });
-    }
-  };
-
-  const handleNotificationClick = (postId) => {
-    if (!teacher) return;
-    if (teacherId) saveSeenPost(teacherId, postId);
-    setHighlightedPostId(postId);
-    const el = postRefs.current[postId];
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-    setNotifications((prev) => prev.filter((n) => n.id !== postId));
-    setTimeout(() => setHighlightedPostId(null), 3000);
-  };
-
-  const handleOpenConversation = async (conv) => {
-    if (!teacher || !conv) return;
-    const { chatId, contact } = conv;
-
-    navigate("/all-chat", { state: { contact, chatId } });
-
-    try {
-      await axios.patch(
-        `${DB_ROOT}/${buildChatSummaryPath(teacherId, chatId)}.json`,
-        buildChatSummaryUpdate({
-          chatId,
-          otherUserId: contact?.userId,
-          unreadCount: 0,
-          lastMessageSeen: true,
-          lastMessageSeenAt: Date.now(),
-        })
-      );
-      clearCachedChatSummary({ rtdbBase: DB_ROOT, chatId, teacherUserId: teacherId });
-    } catch (err) {
-      console.error("Failed to clear unread in DB:", err);
-    }
-
-    setConversations((prev) =>
-      prev.map((item) =>
-        item.chatId === chatId
-          ? { ...item, unreadForMe: 0 }
-          : item
-      )
-    );
-  };
-
-  const handleLogout = async () => {
+  const handleLogout = useCallback(async () => {
     await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
     navigate("/login", { replace: true });
-  };
+  }, [navigate]);
 
-  const totalUnreadMessages = conversations.reduce(
-    (sum, c) => sum + (c.unreadForMe || 0),
-    0
+  const totalUnreadMessages = useMemo(
+    () =>
+      conversations.reduce(
+        (sum, c) => sum + (c.unreadForMe || 0),
+        0
+      ),
+    [conversations]
   );
-  const messageCount = totalUnreadMessages;
-  const recentConversations = conversations.slice(0, 5);
-  const totalNotifications = notifications.length + totalUnreadMessages;
-  const totalPostsToday = posts.filter((post) => {
-    const timestamp = post.time ? new Date(post.time) : null;
-    if (!timestamp || Number.isNaN(timestamp.getTime())) return false;
-    const now = new Date();
-    return (
-      timestamp.getDate() === now.getDate() &&
-      timestamp.getMonth() === now.getMonth() &&
-      timestamp.getFullYear() === now.getFullYear()
-    );
-  }).length;
-
-  const recentContacts = recentConversations
-    .map((conv) => ({
-      userId: conv.contact?.userId || conv.contact?.pushKey || conv.chatId,
-      chatId: conv.chatId,
-      conversation: conv,
-      name: conv.displayName || "User",
-      profileImage: conv.profile || "/default-profile.png",
-      type: "user",
-      unreadCount: Number(conv.unreadForMe || 0),
-      lastMessage:
-        conv.lastMessageText ||
-        (Number(conv.unreadForMe || 0) > 0
-          ? `${Number(conv.unreadForMe || 0)} unread message${
-              Number(conv.unreadForMe || 0) === 1 ? "" : "s"
-            }`
-          : "Open chat"),
-    }))
-    .slice(0, 4);
-
-  const handleCalendarMonthChange = (offset) => {
-    setCalendarViewDate((currentDate) => {
-      let nextYear = currentDate.year;
-      let nextMonth = currentDate.month + offset;
-
-      while (nextMonth < 1) {
-        nextMonth += 13;
-        nextYear -= 1;
-      }
-
-      while (nextMonth > 13) {
-        nextMonth -= 13;
-        nextYear += 1;
-      }
-
-      return {
-        year: nextYear,
-        month: nextMonth,
-      };
-    });
-  };
-
-  const calendarNow = new Date();
-  const currentEthiopicDate = EthiopicCalendar.ge(
-    calendarNow.getFullYear(),
-    calendarNow.getMonth() + 1,
-    calendarNow.getDate()
+  const recentConversations = useMemo(
+    () => conversations.slice(0, 5),
+    [conversations]
   );
-  const calendarDaysInMonth =
-    calendarViewDate.month === 13
-      ? calendarViewDate.year % 4 === 3
-        ? 6
-        : 5
-      : 30;
-  const calendarMonthStartGregorian = EthiopicCalendar.eg(
-    calendarViewDate.year,
-    calendarViewDate.month,
-    1
+  const totalNotifications = useMemo(
+    () => notifications.length + totalUnreadMessages,
+    [notifications, totalUnreadMessages]
   );
-  const calendarMonthEndGregorian = EthiopicCalendar.eg(
-    calendarViewDate.year,
-    calendarViewDate.month,
-    calendarDaysInMonth
-  );
-  const calendarMonthStartIsoDate = formatIsoDate(
-    calendarMonthStartGregorian.year,
-    calendarMonthStartGregorian.month,
-    calendarMonthStartGregorian.day
-  );
-  const calendarMonthEndIsoDate = formatIsoDate(
-    calendarMonthEndGregorian.year,
-    calendarMonthEndGregorian.month,
-    calendarMonthEndGregorian.day
-  );
-  const calendarFirstWeekday = new Date(
-    calendarMonthStartGregorian.year,
-    calendarMonthStartGregorian.month - 1,
-    calendarMonthStartGregorian.day
-  ).getDay();
-  const isCurrentCalendarMonth =
-    calendarViewDate.year === currentEthiopicDate.year &&
-    calendarViewDate.month === currentEthiopicDate.month;
-  const calendarHighlightedDay = isCurrentCalendarMonth
-    ? currentEthiopicDate.day
-    : null;
-
-  const calendarMonthLabel = `${ETHIOPIAN_MONTHS[calendarViewDate.month - 1]} ${calendarViewDate.year}`;
-
-  const defaultCalendarEvents = buildDefaultCalendarEvents(calendarViewDate.year);
-  const mergedCalendarEvents = sortCalendarEvents([
-    ...defaultCalendarEvents,
-    ...calendarEvents,
-  ]);
-  const calendarEventsByDate = mergedCalendarEvents.reduce((eventsMap, eventItem) => {
-    const eventDate = String(eventItem.gregorianDate || "");
-    if (!eventDate) return eventsMap;
-    if (!eventsMap[eventDate]) {
-      eventsMap[eventDate] = [];
-    }
-    eventsMap[eventDate].push(eventItem);
-    return eventsMap;
-  }, {});
-
-  const calendarDays = Array.from(
-    { length: calendarFirstWeekday + calendarDaysInMonth },
-    (_, index) => {
-      const dayNumber = index - calendarFirstWeekday + 1;
-      if (dayNumber < 1 || dayNumber > calendarDaysInMonth) return null;
-
-      const gregorianDate = EthiopicCalendar.eg(
-        calendarViewDate.year,
-        calendarViewDate.month,
-        dayNumber
-      );
-      const isoDate = `${gregorianDate.year}-${String(gregorianDate.month).padStart(
-        2,
-        "0"
-      )}-${String(gregorianDate.day).padStart(2, "0")}`;
-
-      return {
-        ethDay: dayNumber,
-        isoDate,
-        gregorianDate,
-        events: calendarEventsByDate[isoDate] || [],
-      };
-    }
-  );
-
-  const monthlyCalendarEvents = sortCalendarEvents(
-    [...calendarDays]
-    .filter(Boolean)
-    .flatMap((dayItem) => dayItem.events.map((eventItem) => ({ ...eventItem, ethDay: dayItem.ethDay })))
-  );
-
-  const selectedCalendarDay =
-    calendarDays.find((dayItem) => dayItem?.isoDate === selectedCalendarIsoDate) ||
-    null;
-  const selectedCalendarEvents = selectedCalendarDay?.events || [];
-
-  const deadlineWindowEnd = new Date(calendarNow);
-  deadlineWindowEnd.setDate(deadlineWindowEnd.getDate() + 30);
-  const deadlineWindowEndIsoDate = formatIsoDate(
-    deadlineWindowEnd.getFullYear(),
-    deadlineWindowEnd.getMonth() + 1,
-    deadlineWindowEnd.getDate()
-  );
-  const calendarTodayIsoDate = formatIsoDate(
-    calendarNow.getFullYear(),
-    calendarNow.getMonth() + 1,
-    calendarNow.getDate()
-  );
-  const calendarBucketKeys = buildCalendarBucketKeys({
-    visibleMonthStartIsoDate: calendarMonthStartIsoDate,
-    visibleMonthEndIsoDate: calendarMonthEndIsoDate,
-    todayIsoDate: calendarTodayIsoDate,
-    deadlineEndIsoDate: deadlineWindowEndIsoDate,
-  });
-
-  const upcomingDeadlineEvents = calendarEvents
-    .filter(
-      (eventItem) =>
-        eventItem.showInUpcomingDeadlines &&
-        eventItem.category === "academic" &&
-        String(eventItem.gregorianDate || "") >= calendarTodayIsoDate &&
-        String(eventItem.gregorianDate || "") <= deadlineWindowEndIsoDate
-    )
-    .sort((a, b) => String(a.gregorianDate || "").localeCompare(String(b.gregorianDate || "")));
-
-  const visibleUpcomingDeadlineEvents = showAllUpcomingDeadlines
-    ? upcomingDeadlineEvents
-    : upcomingDeadlineEvents.slice(0, 3);
-
-  useEffect(() => {
-    const preferredDay =
-      calendarDays.find((dayItem) => dayItem?.ethDay === calendarHighlightedDay) ||
-      calendarDays.find(Boolean) ||
-      null;
-
-    if (!preferredDay) {
-      setSelectedCalendarIsoDate("");
-      return;
-    }
-
-    const stillVisible = calendarDays.some(
-      (dayItem) => dayItem?.isoDate === selectedCalendarIsoDate
-    );
-    if (!stillVisible) {
-      setSelectedCalendarIsoDate(preferredDay.isoDate);
-    }
-  }, [
-    calendarViewDate.year,
-    calendarViewDate.month,
-    calendarHighlightedDay,
-    calendarDays.length,
-  ]);
-
-  const loadCalendarEvents = async (options = {}) => {
-    if (!effectiveSchoolCode) {
-      setCalendarEvents([]);
-      return;
-    }
-
-    const forceRefresh = Boolean(options?.force);
-    setCalendarEventsLoading(true);
-    try {
-      const sessionCacheKey = getDashboardCalendarSessionKey(
-        effectiveSchoolCode,
-        calendarBucketKeys
-      );
-      const cachedCalendarEvents = !forceRefresh
-        ? readSessionResource(sessionCacheKey, {
-            ttlMs: 5 * 60 * 1000,
-          })
-        : null;
-      if (!forceRefresh && Array.isArray(cachedCalendarEvents)) {
-        setCalendarEvents(cachedCalendarEvents);
-      }
-
-      const bucketNodes = await Promise.all(
-        calendarBucketKeys.map((bucketKey) =>
-          fetchCachedJson(`${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(bucketKey)}.json`, {
-            ttlMs: 5 * 60 * 1000,
-            fallbackValue: {},
-            force: forceRefresh,
-          })
-        )
-      );
-
-      let normalizedEvents = bucketNodes.flatMap((bucketNode) =>
-        normalizeCalendarEventsFromNode(bucketNode)
-      );
-
-      if (!normalizedEvents.length) {
-        const rawEvents = await fetchCachedJson(`${DB_ROOT}/CalendarEvents.json`, {
-          ttlMs: 5 * 60 * 1000,
-          fallbackValue: {},
-          force: forceRefresh,
-        });
-
-        normalizedEvents = normalizeCalendarEventsFromNode(rawEvents).filter((eventItem) =>
-          calendarBucketKeys.includes(toCalendarBucketKey(eventItem.gregorianDate))
+  const totalPostsToday = useMemo(
+    () =>
+      posts.filter((post) => {
+        const timestamp = post.time ? new Date(post.time) : null;
+        if (!timestamp || Number.isNaN(timestamp.getTime())) return false;
+        const now = new Date();
+        return (
+          timestamp.getDate() === now.getDate() &&
+          timestamp.getMonth() === now.getMonth() &&
+          timestamp.getFullYear() === now.getFullYear()
         );
+      }).length,
+    [posts]
+  );
 
-        if (normalizedEvents.length) {
-          await Promise.all(
-            normalizedEvents
-              .map((eventItem) => {
-                const bucketKey = toCalendarBucketKey(eventItem.gregorianDate);
-                if (!bucketKey || !eventItem.id) return null;
-
-                return axios
-                  .put(
-                    `${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(bucketKey)}/${encodeURIComponent(eventItem.id)}.json`,
-                    toCalendarStoragePayload(eventItem)
-                  )
-                  .catch(() => null);
-              })
-              .filter(Boolean)
-          );
-        }
-      }
-
-      const sortedEvents = sortCalendarEvents(normalizedEvents);
-      writeSessionResource(sessionCacheKey, sortedEvents);
-      setCalendarEvents(sortedEvents);
-    } catch (err) {
-      console.error("Failed to load calendar events:", err);
-      setCalendarEvents([]);
-    } finally {
-      setCalendarEventsLoading(false);
-    }
-  };
-
-  const handleCreateCalendarEvent = async () => {
-    if (!canManageCalendar) {
-      alert("Only registrar or admin users can manage school calendar events.");
-      return;
-    }
-
-    if (!selectedCalendarDay) {
-      alert("Select a calendar day first.");
-      return;
-    }
-
-    if (calendarModalContext === "deadline" && !calendarEventForm.title.trim()) {
-      alert("Enter a deadline title.");
-      return;
-    }
-
-    setCalendarEventSaving(true);
-    try {
-      const existingEvent = editingCalendarEventId
-        ? calendarEvents.find((eventItem) => eventItem.id === editingCalendarEventId) || null
-        : null;
-      const normalizedCategory =
-        calendarModalContext === "deadline" ? "academic" : calendarEventForm.category;
-      const selectedEventMeta = getCalendarEventMeta(normalizedCategory);
-      const payload = {
-        title: calendarEventForm.title.trim() || selectedEventMeta.label,
-        type: getCalendarEventKey(normalizedCategory),
-        category: normalizedCategory,
-        subType: "general",
-        notes: calendarEventForm.notes.trim(),
-        showInUpcomingDeadlines:
-          calendarModalContext === "deadline" ||
-          Boolean(existingEvent?.showInUpcomingDeadlines),
-        gregorianDate: selectedCalendarDay.isoDate,
-        ethiopianDate: {
-          year: calendarViewDate.year,
-          month: calendarViewDate.month,
-          day: selectedCalendarDay.ethDay,
-        },
-        createdAt: new Date().toISOString(),
-        createdBy: teacherId || "",
-      };
-      const nextBucketKey = toCalendarBucketKey(payload.gregorianDate);
-
-      if (editingCalendarEventId) {
-        await axios.patch(`${DB_ROOT}/CalendarEvents/${editingCalendarEventId}.json`, payload);
-        if (nextBucketKey) {
-          await axios.put(
-            `${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(nextBucketKey)}/${encodeURIComponent(editingCalendarEventId)}.json`,
-            payload
-          );
-        }
-
-        const previousBucketKey = toCalendarBucketKey(existingEvent?.gregorianDate);
-        if (previousBucketKey && previousBucketKey !== nextBucketKey) {
-          await axios
-            .delete(
-              `${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(previousBucketKey)}/${encodeURIComponent(editingCalendarEventId)}.json`
-            )
-            .catch(() => null);
-        }
-        setCalendarActionMessage("Calendar event updated successfully.");
-      } else {
-        const createRes = await axios.post(`${DB_ROOT}/CalendarEvents.json`, payload);
-        const createdEventId = String(createRes?.data?.name || "").trim();
-        if (createdEventId && nextBucketKey) {
-          await axios.put(
-            `${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(nextBucketKey)}/${encodeURIComponent(createdEventId)}.json`,
-            payload
-          );
-        }
-        setCalendarActionMessage("Calendar event saved successfully.");
-      }
-
-      setCalendarEventForm({ title: "", category: "no-class", subType: "general", notes: "" });
-      setEditingCalendarEventId("");
-      setShowCalendarEventModal(false);
-      setCalendarModalContext("calendar");
-      await loadCalendarEvents({ force: true });
-    } catch (err) {
-      console.error("Failed to save calendar event:", err);
-      alert("Failed to save calendar event.");
-    } finally {
-      setCalendarEventSaving(false);
-    }
-  };
-
-  const handleEditCalendarEvent = (eventItem) => {
-    if (!canManageCalendar || eventItem.isDefault) return;
-
-    setCalendarModalContext(eventItem.showInUpcomingDeadlines ? "deadline" : "calendar");
-    setShowCalendarEventModal(true);
-
-    const ethiopianDate =
-      eventItem.ethiopianDate ||
-      (() => {
-        const [year, month, day] = String(eventItem.gregorianDate || "")
-          .split("-")
-          .map(Number);
-        if (!year || !month || !day) {
-          return null;
-        }
-        return EthiopicCalendar.ge(year, month, day);
-      })();
-
-    if (ethiopianDate?.year && ethiopianDate?.month) {
-      setCalendarViewDate({ year: ethiopianDate.year, month: ethiopianDate.month });
-    }
-
-    setSelectedCalendarIsoDate(eventItem.gregorianDate);
-    setCalendarEventForm({
-      title: eventItem.title || "",
-      category: eventItem.category || (eventItem.type === "academic" ? "academic" : "no-class"),
-      subType: "general",
-      notes: eventItem.notes || "",
-    });
-    setEditingCalendarEventId(eventItem.id);
-  };
-
-  const handleDeleteCalendarEvent = async (eventItem) => {
-    if (!canManageCalendar) {
-      alert("Only registrar or admin users can manage school calendar events.");
-      return;
-    }
-
-    if (eventItem.isDefault) {
-      alert("Default Ethiopian special days cannot be deleted.");
-      return;
-    }
-
-    const selectedEventMeta = getCalendarEventMeta(eventItem.category);
-    const shouldDelete = window.confirm(`Delete ${selectedEventMeta.label} on ${eventItem.gregorianDate}?`);
-    if (!shouldDelete) return;
-
-    setCalendarEventSaving(true);
-    try {
-      await axios.delete(`${DB_ROOT}/CalendarEvents/${eventItem.id}.json`);
-      const bucketKey = toCalendarBucketKey(eventItem.gregorianDate);
-      if (bucketKey) {
-        await axios
-          .delete(
-            `${DB_ROOT}/CalendarEventsByMonth/${encodeURIComponent(bucketKey)}/${encodeURIComponent(eventItem.id)}.json`
-          )
-          .catch(() => null);
-      }
-      if (editingCalendarEventId === eventItem.id) {
-        setEditingCalendarEventId("");
-        setCalendarEventForm({ title: "", category: "no-class", subType: "general", notes: "" });
-      }
-      setCalendarActionMessage("Calendar event deleted successfully.");
-      await loadCalendarEvents({ force: true });
-    } catch (err) {
-      console.error("Failed to delete calendar event:", err);
-      alert("Failed to delete calendar event.");
-    } finally {
-      setCalendarEventSaving(false);
-    }
-  };
-
-  const handleOpenCalendarEventModal = () => {
-    const selectableCalendarDays = calendarDays.filter(Boolean);
-    if (!selectedCalendarIsoDate && selectableCalendarDays.length > 0) {
-      setSelectedCalendarIsoDate(selectableCalendarDays[0].isoDate);
-    }
-    setEditingCalendarEventId("");
-    setCalendarEventForm({ title: "", category: "no-class", subType: "general", notes: "" });
-    setCalendarModalContext("calendar");
-    setShowCalendarEventModal(true);
-  };
-
-  const handleOpenDeadlineModal = () => {
-    const selectableCalendarDays = calendarDays.filter(Boolean);
-    if (!selectedCalendarIsoDate && selectableCalendarDays.length > 0) {
-      setSelectedCalendarIsoDate(selectableCalendarDays[0].isoDate);
-    }
-    setEditingCalendarEventId("");
-    setCalendarEventForm({ title: "", category: "academic", subType: "general", notes: "" });
-    setCalendarModalContext("deadline");
-    setShowCalendarEventModal(true);
-  };
-
-  const handleCloseCalendarEventModal = () => {
-    setEditingCalendarEventId("");
-    setCalendarEventForm({ title: "", category: "no-class", subType: "general", notes: "" });
-    setCalendarModalContext("calendar");
-    setShowCalendarEventModal(false);
-  };
-
-  useEffect(() => {
-    if (!calendarActionMessage) return undefined;
-    const timeoutId = window.setTimeout(() => {
-      setCalendarActionMessage("");
-    }, 2600);
-    return () => window.clearTimeout(timeoutId);
-  }, [calendarActionMessage]);
-
-  useEffect(() => {
-    setShowAllUpcomingDeadlines(false);
-    loadCalendarEvents();
-  }, [effectiveSchoolCode, calendarViewDate.year, calendarViewDate.month]);
+  const recentContacts = useMemo(
+    () =>
+      recentConversations
+        .map((conv) => ({
+          userId: conv.contact?.userId || conv.contact?.pushKey || conv.chatId,
+          chatId: conv.chatId,
+          conversation: conv,
+          name: conv.displayName || "User",
+          profileImage: conv.profile || "/default-profile.png",
+          type: "user",
+          unreadCount: Number(conv.unreadForMe || 0),
+          lastMessage:
+            conv.lastMessageText ||
+            (Number(conv.unreadForMe || 0) > 0
+              ? `${Number(conv.unreadForMe || 0)} unread message${
+                  Number(conv.unreadForMe || 0) === 1 ? "" : "s"
+                }`
+              : "Open chat"),
+        }))
+        .slice(0, 4),
+    [recentConversations]
+  );
 
   return (
     <div
@@ -1681,6 +610,24 @@ export default function Dashboard() {
         "--shadow-glow": "0 0 0 2px rgba(0, 122, 251, 0.18)",
       }}
     >
+      {!isOnline && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 9999,
+          background: "#DC2626",
+          color: "#fff",
+          fontSize: 13,
+          fontWeight: 700,
+          textAlign: "center",
+          padding: "10px 16px",
+          letterSpacing: "0.01em",
+        }}>
+          ⚠️ You are offline — some data may be outdated. Changes will not be saved.
+        </div>
+      )}
       <div className="google-dashboard" style={{ display: "flex", gap: compactCards ? 10 : 14, padding: compactCards ? "12px 10px" : "18px 14px", minHeight: "100vh", background: "var(--page-bg)", width: "100%", boxSizing: "border-box", alignItems: "flex-start" }}>
         <Sidebar
           active="dashboard"
@@ -1701,6 +648,7 @@ export default function Dashboard() {
         />
 
         <div className="main-content google-main" style={{ flex: "1 1 0", minWidth: 0, maxWidth: "none", margin: "0", boxSizing: "border-box", alignSelf: "flex-start", minHeight: "calc(100vh - 24px)", overflowY: "visible", overflowX: "hidden", position: "relative", top: "auto", scrollbarWidth: "thin", scrollbarColor: "transparent transparent", padding: compactCards ? "0 8px 0 0" : "0 12px 0 2px", display: "flex", justifyContent: "center", opacity: isOverlayModalOpen ? 0.45 : 1, filter: isOverlayModalOpen ? "blur(1px)" : "none", pointerEvents: isOverlayModalOpen ? "none" : "auto", transition: "opacity 180ms ease, filter 180ms ease" }}>
+          <div style={{ display: mobileTab === "feed" ? "flex" : "none", justifyContent: "center", width: "100%" }}>
           <div style={{ width: "100%", maxWidth: FEED_SECTION_STYLE.maxWidth }}>
           <div className="section-header-card" style={{ ...FEED_SECTION_STYLE, margin: compactCards ? "0 auto 10px" : "0 auto 14px" }}>
             <div className="section-header-card__title" style={{ fontSize: 17 }}>School Updates Feed</div>
@@ -1709,9 +657,32 @@ export default function Dashboard() {
 
           <div className="posts-container" style={{ ...FEED_SECTION_STYLE, display: "flex", flexDirection: "column", gap: compactCards ? 8 : 12 }}>
             {postsLoading ? (
-              <div style={{ ...shellCardStyle, borderRadius: compactCards ? 8 : 10, padding: compactCards ? "12px" : "16px", fontSize: 14, color: "var(--text-muted)", textAlign: "center" }}>
-                Loading posts...
-              </div>
+              <>
+                {[1, 2, 3].map((n) => (
+                  <div
+                    key={n}
+                    style={{
+                      ...shellCardStyle,
+                      borderRadius: compactCards ? 10 : 12,
+                      overflow: "hidden",
+                      padding: compactCards ? "10px 12px" : "12px 14px",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                      <div style={{ width: 42, height: 42, borderRadius: "50%", background: "linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%)", backgroundSize: "200% 100%", animation: "skeleton-shimmer 1.4s infinite" }} />
+                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+                        <div style={{ height: 12, width: "40%", borderRadius: 6, background: "linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%)", backgroundSize: "200% 100%", animation: "skeleton-shimmer 1.4s infinite" }} />
+                        <div style={{ height: 10, width: "25%", borderRadius: 6, background: "linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%)", backgroundSize: "200% 100%", animation: "skeleton-shimmer 1.4s infinite" }} />
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {[100, 85, 60].map((w) => (
+                        <div key={w} style={{ height: 11, width: `${w}%`, borderRadius: 6, background: "linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%)", backgroundSize: "200% 100%", animation: "skeleton-shimmer 1.4s infinite" }} />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </>
             ) : posts.length === 0 ? (
               <div style={{ ...shellCardStyle, borderRadius: compactCards ? 8 : 10, padding: compactCards ? "12px" : "16px", fontSize: 14, color: "var(--text-muted)", textAlign: "center" }}>
                 No posts available right now.
@@ -1852,6 +823,222 @@ export default function Dashboard() {
             })}
           </div>
           </div>
+
+          <div style={{ display: mobileTab === "messages" ? "block" : "none", width: "100%", maxWidth: FEED_SECTION_STYLE.maxWidth }}>
+            <div style={widgetCardStyle}>
+              <h4 style={{ fontSize: 13, fontWeight: 800, margin: 0, color: "var(--text-primary)", letterSpacing: "-0.01em" }}>Today's Activity</h4>
+              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", ...softPanelStyle, padding: "7px 8px", fontSize: 10 }}>
+                  <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>New Posts</span>
+                  <strong style={{ color: "var(--text-primary)" }}>{totalPostsToday}</strong>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", ...softPanelStyle, padding: "7px 8px", fontSize: 10 }}>
+                  <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>Messages</span>
+                  <strong style={{ color: "var(--text-primary)" }}>{totalUnreadMessages}</strong>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-secondary)", marginBottom: 6 }}>Recent Contacts</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {recentContacts.length === 0 ? (
+                    <div style={{ fontSize: 10, color: "var(--text-muted)", ...softPanelStyle, padding: "7px 8px" }}>
+                      No recent chats yet
+                    </div>
+                  ) : (
+                    recentContacts.map((contact) => {
+                      return (
+                        <button
+                          key={contact.userId}
+                          type="button"
+                          onClick={() => handleOpenConversation(contact.conversation)}
+                          style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", textAlign: "left", ...softPanelStyle, padding: "5px 6px", cursor: "pointer" }}
+                        >
+                          <ProfileAvatar
+                            src={contact.profileImage || "/default-profile.png"}
+                            name={contact.name}
+                            alt={contact.name}
+                            style={{ width: 24, height: 24, borderRadius: "50%", objectFit: "cover" }}
+                          />
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {contact.name}
+                            </div>
+                            <div style={{ fontSize: 9, color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {contact.lastMessage || "Open chat"}
+                            </div>
+                          </div>
+                          {contact.unreadCount > 0 ? (
+                            <div style={{ minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, background: "var(--accent)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, flexShrink: 0 }}>
+                              {contact.unreadCount > 99 ? "99+" : contact.unreadCount}
+                            </div>
+                          ) : null}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: mobileTab === "calendar" ? "block" : "none", width: "100%", maxWidth: FEED_SECTION_STYLE.maxWidth }}>
+            <div style={{ ...rightRailCardStyle, overflow: "hidden", position: "relative" }}>
+              <div style={{ padding: compactCards ? "12px 12px 10px" : "14px 14px 12px", background: "var(--surface-panel)", borderBottom: "1px solid rgba(15, 23, 42, 0.08)", position: "relative" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={rightRailIconStyle}>
+                      <FaCalendarAlt style={{ width: 14, height: 14 }} />
+                    </div>
+                    <div>
+                      <h4 style={{ fontSize: 14, fontWeight: 900, margin: 0, color: "var(--text-primary)", letterSpacing: "-0.02em" }}>School Calendar</h4>
+                      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 3, fontWeight: 800 }}>{calendarMonthLabel}</div>
+                      <div style={{ fontSize: 9, color: "var(--text-muted)", marginTop: 2, fontWeight: 500 }}>
+                        {`${calendarMonthStartGregorian.day}/${calendarMonthStartGregorian.month}/${calendarMonthStartGregorian.year} - ${calendarMonthEndGregorian.day}/${calendarMonthEndGregorian.month}/${calendarMonthEndGregorian.year}`}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <button
+                      type="button"
+                      onClick={() => handleCalendarMonthChange(-1)}
+                      style={{ ...rightRailIconButtonStyle, fontSize: 17 }}
+                      aria-label="Previous month"
+                      title="Previous month"
+                    >
+                      ‹
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleCalendarMonthChange(1)}
+                      style={{ ...rightRailIconButtonStyle, fontSize: 17 }}
+                      aria-label="Next month"
+                      title="Next month"
+                    >
+                      ›
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <div style={{ ...rightRailPillStyle, color: "var(--text-primary)" }}>
+                      {monthlyCalendarEvents.length} event{monthlyCalendarEvents.length === 1 ? "" : "s"}
+                    </div>
+                    <div style={{ ...rightRailPillStyle, color: canManageCalendar ? "var(--text-primary)" : "var(--text-secondary)" }}>
+                      {canManageCalendar ? "Manage access" : "View only"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ margin: compactCards ? "10px" : "12px", background: "#F8FAFC", border: "1px solid rgba(15, 23, 42, 0.06)", borderRadius: 12, padding: "10px" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 4, marginBottom: 6 }}>
+                  {CALENDAR_WEEK_DAYS.map((day) => (
+                    <div key={day} style={{ textAlign: "center", fontSize: 9, fontWeight: 800, color: "var(--text-muted)", letterSpacing: "0.03em", textTransform: "uppercase" }}>
+                      {day}
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 4 }}>
+                  {calendarDays.map((day, index) => {
+                    const isToday = day?.ethDay === calendarHighlightedDay;
+                    const dayOfWeek = index % 7;
+                    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+                    const primaryEvent = day?.events?.[0] || null;
+                    const isNoClassDay = primaryEvent?.category === "no-class";
+                    const isAcademicDay = primaryEvent?.category === "academic";
+                    const isSelected = day?.isoDate === selectedCalendarIsoDate;
+                    const isHovered = day?.isoDate === hoveredCalendarIsoDate;
+                    const dayBackground = day
+                      ? isToday
+                        ? "var(--accent-soft)"
+                        : isSelected
+                          ? "color-mix(in srgb, var(--accent-soft) 72%, white 28%)"
+                          : isNoClassDay
+                            ? "color-mix(in srgb, var(--warning-soft) 58%, white 42%)"
+                            : isAcademicDay
+                              ? "color-mix(in srgb, var(--accent-soft) 46%, white 54%)"
+                              : isWeekend
+                                ? "color-mix(in srgb, var(--surface-muted) 82%, white 18%)"
+                                : "var(--surface-panel)"
+                      : "transparent";
+
+                    return (
+                      <button
+                        type="button"
+                        key={`${day?.ethDay || "blank"}-${index}`}
+                        onClick={() => day && setSelectedCalendarIsoDate(day.isoDate)}
+                        onMouseEnter={() => day && setHoveredCalendarIsoDate(day.isoDate)}
+                        onMouseLeave={() => setHoveredCalendarIsoDate("")}
+                        onFocus={() => day && setHoveredCalendarIsoDate(day.isoDate)}
+                        onBlur={() => setHoveredCalendarIsoDate("")}
+                        title={day?.events?.length ? day.events.map((eventItem) => eventItem.title).join(", ") : ""}
+                        style={{
+                          minHeight: 0,
+                          aspectRatio: "1 / 1",
+                          borderRadius: 10,
+                          border: isToday
+                            ? "1px solid var(--accent)"
+                            : isSelected
+                              ? "1px solid var(--accent-strong)"
+                              : isHovered
+                                ? "1px solid var(--border-strong)"
+                                    : isNoClassDay
+                                      ? "1px solid var(--warning-border)"
+                                      : "1px solid var(--border-soft)",
+                          background: dayBackground,
+                          color: isToday ? "var(--accent-strong)" : day ? "var(--text-secondary)" : "transparent",
+                          fontSize: 10,
+                          fontWeight: isToday ? 800 : 700,
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 1,
+                          padding: "5px 2px",
+                          boxShadow: day && isSelected ? "0 8px 18px rgba(0, 122, 251, 0.12)" : "none",
+                          cursor: day ? "pointer" : "default",
+                          outline: "none",
+                          transform: day && isSelected
+                            ? "translateY(-2px) scale(1.03)"
+                            : day && isHovered
+                              ? "translateY(-1px)"
+                              : "translateY(0)",
+                          transition: "transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease, color 160ms ease",
+                          position: "relative",
+                          overflow: "hidden",
+                        }}
+                        disabled={!day}
+                      >
+                        {day ? (
+                          <>
+                            <div style={{ fontSize: 11, fontWeight: 800, color: isToday || isSelected ? "var(--accent-strong)" : "var(--text-primary)", lineHeight: 1 }}>{day.ethDay}</div>
+                            <div style={{ fontSize: 8, color: isSelected ? "var(--accent)" : "var(--text-muted)", lineHeight: 1 }}>{day.gregorianDate.day}/{day.gregorianDate.month}</div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 2, minHeight: 6 }}>
+                              {day.events.slice(0, 2).map((eventItem) => (
+                                <span
+                                  key={eventItem.id}
+                                  style={{
+                                    width: 5,
+                                    height: 5,
+                                    borderRadius: "50%",
+                                    background: getCalendarEventMeta(eventItem.category).color,
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          </>
+                        ) : ""}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
         </div>
 
         <div
@@ -1881,7 +1068,7 @@ export default function Dashboard() {
                 </div>
                 <div style={smallStatStyle}>
                   <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600 }}>Unread</div>
-                  <div style={{ marginTop: 3, fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>{messageCount}</div>
+                  <div style={{ marginTop: 3, fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>{totalUnreadMessages}</div>
                 </div>
                 <div style={smallStatStyle}>
                   <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600 }}>Notifications</div>
@@ -1945,7 +1132,7 @@ export default function Dashboard() {
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", ...softPanelStyle, padding: "7px 8px", fontSize: 10 }}>
                   <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>Messages</span>
-                  <strong style={{ color: "var(--text-primary)" }}>{messageCount}</strong>
+                  <strong style={{ color: "var(--text-primary)" }}>{totalUnreadMessages}</strong>
                 </div>
               </div>
 
@@ -1991,7 +1178,6 @@ export default function Dashboard() {
                 </div>
               </div>
             </div>
-                {/* //  */}
             <div style={{ ...rightRailCardStyle, overflow: "hidden", position: "relative" }}>
               <div style={{ padding: compactCards ? "12px 12px 10px" : "14px 14px 12px", background: "var(--surface-panel)", borderBottom: "1px solid rgba(15, 23, 42, 0.08)", position: "relative" }}>
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
@@ -2172,6 +1358,12 @@ export default function Dashboard() {
                 </div>
               ) : null}
 
+              {calendarErrorMessage ? (
+                <div style={{ margin: "10px 12px 0", borderRadius: 12, border: "1px solid var(--danger-border)", background: "var(--warning-soft)", color: "var(--danger)", fontSize: 10, fontWeight: 800, padding: "8px 10px" }}>
+                  {calendarErrorMessage}
+                </div>
+              ) : null}
+
               <div style={{ margin: "12px", background: "#F8FAFC", border: "1px solid rgba(15, 23, 42, 0.06)", borderRadius: 12, padding: "10px" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
                   <div>
@@ -2250,6 +1442,34 @@ export default function Dashboard() {
                   )}
                 </div>
               </div>
+
+              {pendingDeleteEvent ? (
+                <div style={{ margin: "10px 12px", padding: "10px", borderRadius: 10, border: "1px solid var(--danger-border)", background: "var(--warning-soft)" }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--danger)", marginBottom: 8 }}>
+                    Delete {getCalendarEventMeta(pendingDeleteEvent.category).label} on{" "}
+                    {pendingDeleteEvent.gregorianDate}?
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleConfirmedDelete(pendingDeleteEvent);
+                        setPendingDeleteEvent(null);
+                      }}
+                      style={{ height: 28, padding: "0 12px", borderRadius: 8, fontSize: 10, fontWeight: 800, cursor: "pointer", background: "var(--danger)", color: "#fff", border: "none" }}
+                    >
+                      Delete
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPendingDeleteEvent(null)}
+                      style={{ height: 28, padding: "0 12px", borderRadius: 8, fontSize: 10, fontWeight: 800, cursor: "pointer", background: "var(--surface-panel)", color: "var(--text-primary)", border: "1px solid var(--border-soft)" }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             <div style={{ ...widgetCardStyle, padding: compactCards ? "10px" : "12px" }}>
@@ -2583,257 +1803,16 @@ export default function Dashboard() {
           </div>
         ) : null}
 
-        <style>{`
-          .posts-container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: flex-start;
-            margin-left: 0;
-          }
-          .post-box {
-            width: 100%;
-            margin-left: auto;
-            margin-right: auto;
-            margin-top: 12px;
-          }
-          .facebook-post-card {
-            width: 100%;
-            max-width: 680px;
-            margin: 0 auto;
-            position: relative;
-            isolation: isolate;
-          }
-          .facebook-post-card:hover {
-            transform: translateY(-2px);
-          }
-          .facebook-post-card__header {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 12px;
-          }
-          .facebook-post-card__header-main {
-            min-width: 0;
-            flex: 1;
-            display: flex;
-            align-items: flex-start;
-            gap: 12px;
-          }
-          .facebook-post-card__avatar {
-            width: 42px;
-            height: 42px;
-            border-radius: 50%;
-            overflow: hidden;
-            flex-shrink: 0;
-            border: 1px solid rgba(15, 23, 42, 0.08);
-            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
-            background: #fff;
-          }
-          .facebook-post-card__identity {
-            min-width: 0;
-            flex: 1;
-          }
-          .facebook-post-card__identity-row {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-wrap: wrap;
-          }
-          .facebook-post-card__identity-row h4 {
-            margin: 0;
-            font-size: 14px;
-            line-height: 1.25;
-            font-weight: 800;
-            color: var(--text-primary);
-          }
-          .facebook-post-card__page-badge {
-            display: inline-flex;
-            align-items: center;
-            padding: 3px 8px;
-            border-radius: 999px;
-            background: #e7f3ff;
-            color: #0866ff;
-            font-size: 10px;
-            font-weight: 800;
-            letter-spacing: 0.02em;
-          }
-          .facebook-post-card__meta {
-            margin-top: 4px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            flex-wrap: wrap;
-            font-size: 11px;
-            font-weight: 600;
-            color: #65676b;
-          }
-          .facebook-post-card__type-chip {
-            flex-shrink: 0;
-            display: inline-flex;
-            align-items: center;
-            padding: 5px 9px;
-            border-radius: 999px;
-            background: linear-gradient(135deg, #f0f6ff 0%, #e7f3ff 100%);
-            border: 1px solid #bfdcff;
-            color: #0866ff;
-            font-size: 9px;
-            font-weight: 800;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
-          }
-          .facebook-post-card__body {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-          }
-          .facebook-post-card__message {
-            color: var(--text-primary);
-            font-size: 14px;
-            line-height: 1.45;
-            word-break: break-word;
-            white-space: pre-wrap;
-          }
-          .facebook-post-card__read-more {
-            align-self: flex-start;
-            padding: 0;
-            border: none;
-            background: transparent;
-            color: #0866ff;
-            cursor: pointer;
-            font-size: 13px;
-            font-weight: 800;
-          }
-          .facebook-post-card__media-shell {
-            background: #eff2f5;
-            border-top: 1px solid rgba(15, 23, 42, 0.08);
-            border-bottom: 1px solid rgba(15, 23, 42, 0.08);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          }
-          .facebook-post-card__media {
-            width: 100%;
-            height: auto;
-            max-height: min(68vh, 540px);
-            object-fit: contain;
-            display: block;
-            background: #eff2f5;
-          }
-          .facebook-post-card__stats {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            border-bottom: 1px solid rgba(15, 23, 42, 0.08);
-          }
-          .facebook-post-card__stats-left,
-          .facebook-post-card__stats-right {
-            min-width: 0;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 11px;
-            font-weight: 600;
-            color: #65676b;
-          }
-          .facebook-post-card__stats-right {
-            justify-content: flex-end;
-            text-align: right;
-          }
-          .facebook-post-card__reaction-bubble {
-            width: 22px;
-            height: 22px;
-            border-radius: 50%;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            flex-shrink: 0;
-            background: #0866ff;
-            color: #fff;
-            box-shadow: 0 6px 16px rgba(8, 102, 255, 0.22);
-          }
-          .facebook-post-card__actions {
-            display: flex;
-          }
-          .facebook-post-card__action-button {
-            width: 100%;
-            min-height: 36px;
-            border: none;
-            border-radius: 8px;
-            background: transparent;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            cursor: pointer;
-            color: #65676b;
-            font-size: 13px;
-            font-weight: 800;
-            transition: background 160ms ease, color 160ms ease, transform 160ms ease;
-          }
-          .facebook-post-card__action-button:hover {
-            background: #f2f4f7;
-          }
-          .facebook-post-card__action-button.is-active {
-            background: #e7f3ff;
-            color: #0866ff;
-          }
-          .facebook-post-card__action-button:active {
-            transform: translateY(1px);
-          }
-          @media (max-width: 720px) {
-            .facebook-post-card__header {
-              flex-wrap: wrap;
-            }
-            .facebook-post-card__type-chip {
-              order: 3;
-            }
-            .facebook-post-card__stats {
-              flex-direction: column;
-              align-items: flex-start;
-            }
-            .facebook-post-card__stats-right {
-              justify-content: flex-start;
-              text-align: left;
-            }
-          }
-          @media (max-width: 600px) {
-            .posts-container {
-              margin-left: 0 !important;
-            }
-            .post-box {
-              margin-top: 0 !important;
-            }
-          }
-          @media (max-width: 600px) {
-            .posts-full-mobile,
-            .posts-container,
-            .post-box {
-              width: 100vw !important;
-              max-width: 100vw !important;
-              margin: 0 !important;
-              padding: 0 !important;
-              border-radius: 0 !important;
-              box-shadow: none !important;
-            }
-            .posts-container {
-              align-items: stretch;
-            }
-          }
-          @media (max-width: 1100px) {
-            .right-widgets-spacer,
-            .dashboard-widgets {
-              display: none !important;
-            }
-          }
-          @media (max-width: 600px) {
-            .teacher-sidebar-spacer {
-              display: none !important;
-            }
-          }
-        `}</style>
       </div>
+
+      <nav className="mobile-bottom-bar">
+        <button type="button" className={mobileTab === "feed" ? "active" : ""} onClick={() => setMobileTab("feed")}>Feed</button>
+        <button type="button" className={mobileTab === "calendar" ? "active" : ""} onClick={() => setMobileTab("calendar")}>Calendar</button>
+        <button type="button" className={mobileTab === "messages" ? "active" : ""} onClick={() => setMobileTab("messages")}> 
+          Messages
+          {totalUnreadMessages > 0 && <span className="mobile-badge">{totalUnreadMessages > 99 ? "99+" : totalUnreadMessages}</span>}
+        </button>
+      </nav>
     </div>
   );
 }

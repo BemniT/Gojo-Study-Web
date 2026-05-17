@@ -11,14 +11,14 @@ const trimEnv = (value, fallback = "") => {
 
 // Default values used when VITE_ env vars are not set (e.g. local dev without .env)
 const DEFAULT_CONFIG = {
-  apiKey: "AIzaSyCXMU6x1UQpsLM9q11j6am6lj6zx9DtqB8",
-  authDomain: "gojo-education.firebaseapp.com",
-  databaseURL: "https://gojo-education-default-rtdb.firebaseio.com",
-  projectId: "gojo-education",
-  storageBucket: "gojo-education.firebasestorage.app",
-  messagingSenderId: "579247228743",
-  appId: "1:579247228743:web:79a822ad859841106f2e62",
-  measurementId: "G-1F69BFH4WS",
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 
 const firebaseConfig = {
