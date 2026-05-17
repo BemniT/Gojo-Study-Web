@@ -1,552 +1,174 @@
-import React, { useEffect, useState, useRef, useMemo } from "react";
+import React, { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import axios from "axios";
+import { chatService } from "../services/chatService";
 import { useNavigate, useLocation } from "react-router-dom";
-import { FaArrowLeft, FaPaperPlane, FaCheck, FaImage, FaTimes, FaFilter } from "react-icons/fa";
+import { FaPaperPlane, FaCheck, FaImage, FaTimes } from "react-icons/fa";
+import { increment, ref as dbRef, update } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
-import { storage } from "../firebase";
-import { API_BASE } from "../api/apiConfig";
-import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
-import { getTeacherCourseContext } from "../api/teacherApi";
-import { fetchCachedJson } from "../utils/rtdbCache";
+import { storage, db, schoolPath } from "../firebase";
+import { getRtdbRoot } from "../api/rtdbScope";
 import {
   buildChatMessageQuery,
   buildChatSummaryPath,
   buildChatSummaryUpdate,
   filterChatMessageRows,
   getLastChatMessageKey,
-  mapInBatches,
 } from "../utils/chatRtdb";
 import {
   clearCachedChatSummary,
   buildUnreadConversationMap,
-  extractAllowedGradeSectionsFromCourseContext,
   fetchTeacherConversationSummaries,
-  loadParentRecordsByIds,
-  loadStudentsByGradeSections,
-  loadUserRecordsByIds,
-  normalizeIdentifier,
   readSessionResource,
   resolveTeacherSchoolCode,
   writeSessionResource,
 } from "../utils/teacherData";
-import { resolveProfileImage } from "../utils/profileImage";
+import {
+  buildUnreadSessionKey,
+  compressImageToJpeg,
+  createPlaceholderAvatar,
+  deleteStorageObjectByUrl,
+  formatDateLabel,
+  formatTime,
+  mergeChatMessages,
+  getChatIdForTab,
+  normalizeTab,
+} from "../utils/chatHelpers";
 
-// NOTE: This codebase uses two chat-key conventions:
-// - Students/Parents: teacherUserId_otherUserId (teacher first)
-// - Admins: [id1,id2].sort().join('_')
-const teacherFirstChatId = (teacherUserId, otherUserId) => {
-  const t = String(teacherUserId || "").trim();
-  const o = String(otherUserId || "").trim();
-  return `${t}_${o}`;
-};
+import { usePresence } from "../hooks/usePresence";
+import { useTeacherSession } from "../hooks/useTeacherSession";
+import { useContacts } from "../hooks/useContacts";
 
-const sortedChatId = (id1, id2) => {
-  const a = String(id1 || "").trim();
-  const b = String(id2 || "").trim();
-  return [a, b].sort().join("_");
-};
+import ContactList from "./chat/ContactList";
+import MessageThread from "./chat/MessageThread";
+import MessageInput from "./chat/MessageInput";
+import ImagePreviewOverlay from "./chat/ImagePreviewOverlay";
+import MessageActionMenu from "./chat/MessageActionMenu";
+import styles from "./chat/AllChat.module.css";
 
-const normalizeTab = (tab) => {
-  const t = String(tab || "").toLowerCase();
-  if (t === "student" || t === "students") return "student";
-  if (t === "parent" || t === "parents") return "parent";
-  if (t === "admin" || t === "admins") return "admin";
-  return null;
-};
-
-const getChatIdForTab = (tab, teacherUserId, otherUserId) => {
-  const normalized = normalizeTab(tab) || "student";
-  return normalized === "admin"
-    ? sortedChatId(teacherUserId, otherUserId)
-    : teacherFirstChatId(teacherUserId, otherUserId);
-};
-
-const normalizeGrade = (value) => String(value ?? "").trim();
-const normalizeSection = (value) => String(value ?? "").trim().toUpperCase();
-const normalizeRole = (value) => String(value || "").trim().toLowerCase();
-const normalizeTeacherRef = (value) => String(value || "").trim().replace(/^-+/, "").toUpperCase();
-const getStudentUserId = (student = {}) =>
-  String(
-    student?.userId ||
-      student?.systemAccountInformation?.userId ||
-      student?.account?.userId ||
-      ""
-  ).trim();
-
-const DEFAULT_PROFILE_IMAGE = "/default-profile.png";
-
-const getInitials = (name) => {
-  const words = String(name || "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-
-  if (!words.length) return "U";
-  if (words.length === 1) return words[0].charAt(0).toUpperCase();
-  return `${words[0].charAt(0)}${words[1].charAt(0)}`.toUpperCase();
-};
-
-const createPlaceholderAvatar = (name) => {
-  const initials = getInitials(name);
-  const svg = `
-<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'>
-  <defs>
-    <linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>
-      <stop offset='0%' stop-color='#2563eb'/>
-      <stop offset='100%' stop-color='#0ea5e9'/>
-    </linearGradient>
-  </defs>
-  <rect width='160' height='160' rx='80' fill='url(#g)'/>
-  <text x='50%' y='53%' dominant-baseline='middle' text-anchor='middle' fill='white' font-family='Segoe UI, Arial, sans-serif' font-size='56' font-weight='700'>${initials}</text>
-</svg>`;
-
-  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
-};
-
-const sanitizeProfileImage = (value) => {
-  const raw = String(value || "").trim();
-  if (!raw) return DEFAULT_PROFILE_IMAGE;
-
-  const lower = raw.toLowerCase();
-  // file:// and content:// images from mobile clients are not web-loadable in browser.
-  if (lower.startsWith("file://") || lower.startsWith("content://")) {
-    return DEFAULT_PROFILE_IMAGE;
-  }
-
-  return raw;
-};
-
-const resolveAvatarSrc = (rawValue, name) => {
-  const sanitized = sanitizeProfileImage(rawValue);
-  if (!sanitized || sanitized === DEFAULT_PROFILE_IMAGE) {
-    return createPlaceholderAvatar(name);
-  }
-  return sanitized;
-};
-
-const loadImageFromFile = (file) =>
-  new Promise((resolve, reject) => {
-    const objectUrl = URL.createObjectURL(file);
-    const image = new Image();
-    image.onload = () => {
-      URL.revokeObjectURL(objectUrl);
-      resolve(image);
-    };
-    image.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error("Failed to load image file"));
-    };
-    image.src = objectUrl;
-  });
-
-const compressImageToJpeg = async (file, { maxWidth = 1280, maxHeight = 1280, quality = 0.72 } = {}) => {
-  const image = await loadImageFromFile(file);
-
-  let width = image.naturalWidth || image.width;
-  let height = image.naturalHeight || image.height;
-
-  const ratio = Math.min(maxWidth / width, maxHeight / height, 1);
-  width = Math.max(1, Math.round(width * ratio));
-  height = Math.max(1, Math.round(height * ratio));
-
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-
-  const context = canvas.getContext("2d");
-  if (!context) {
-    throw new Error("Canvas context unavailable");
-  }
-
-  context.drawImage(image, 0, 0, width, height);
-
-  const blob = await new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (output) => {
-        if (!output) {
-          reject(new Error("Image compression failed"));
-          return;
-        }
-        resolve(output);
-      },
-      "image/jpeg",
-      quality
-    );
-  });
-
-  return blob;
-};
-
-const isActiveRecord = (record = {}) => {
-  const raw = record?.status ?? record?.isActive;
-  if (typeof raw === "boolean") return raw;
-  const normalized = String(raw || "active").toLowerCase();
-  return normalized === "active" || normalized === "true" || normalized === "1";
-};
-
-const isAcademicAdmin = ({ schoolAdmin = {}, user = {} } = {}) => {
-  const role = normalizeRole(user?.role || user?.userType || schoolAdmin?.role);
-  const text = [
-    schoolAdmin?.title,
-    schoolAdmin?.department,
-    schoolAdmin?.office,
-    schoolAdmin?.position,
-    schoolAdmin?.responsibility,
-    user?.title,
-    user?.department,
-    user?.position,
-    user?.responsibility,
-    role,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  if (!text.trim()) {
-    return role === "admin" || role === "school_admin" || role === "school_admins";
-  }
-
-  return ["academic", "academics", "principal", "vice principal", "dean", "curriculum"].some((k) => text.includes(k));
-};
-
-const isManagementEligible = ({ source = "", record = {}, user = {} } = {}) => {
-  const role = normalizeRole(user?.role || user?.userType || record?.role || source);
-  const text = [
-    source,
-    role,
-    record?.title,
-    record?.department,
-    record?.office,
-    record?.position,
-    record?.responsibility,
-    user?.title,
-    user?.department,
-    user?.position,
-    user?.responsibility,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  return [
-    "academic",
-    "academics",
-    "principal",
-    "vice principal",
-    "dean",
-    "curriculum",
-    "admin",
-    "management",
-    "hr",
-    "human resource",
-    "register",
-    "registrar",
-  ].some((keyword) => text.includes(keyword));
-};
-
-const pickFirstNonEmpty = (...values) => {
-  for (const value of values) {
-    const normalized = String(value || "").trim();
-    if (normalized) return normalized;
-  }
-  return "";
-};
-
-const CONTACTS_SESSION_TTL_MS = 5 * 60 * 1000;
-const UNREAD_SUMMARY_TTL_MS = 3 * 60 * 1000;
-const CHAT_HISTORY_PAGE_SIZE = 50;
-const CHAT_MESSAGE_POLL_INTERVAL_MS = 2 * 60 * 1000;
 const CHAT_POLL_IDLE_GRACE_MS = 2 * 60 * 1000;
-const PRESENCE_POLL_INTERVAL_MS = 2 * 60 * 1000;
-const PRESENCE_BATCH_SIZE = 12;
+const UNREAD_SUMMARY_TTL_MS = 3 * 60 * 1000;
+// Debounce delay for showing/hiding the search/filter card while scrolling.
+const SEARCH_CARD_DEBOUNCE_MS = 280;
+// Ignore tiny scroll jitter smaller than this pixel delta.
+const SCROLL_DELTA_THRESHOLD_PX = 14;
+// Consider the list near the top when scrollTop is within this pixel range.
+const SCROLL_NEAR_TOP_PX = 8;
+// Consider the list near the bottom when remaining scroll distance is within this pixel range.
+const SCROLL_NEAR_BOTTOM_PX = 6;
+// Idle timeout before hiding search/filter card after scroll settles.
+const SEARCH_CARD_IDLE_TIMEOUT_MS = 1000;
+const CHAT_MESSAGE_POLL_INTERVAL_MS = 2 * 60 * 1000;
+const CHAT_HISTORY_PAGE_SIZE = 50;
+const UNREAD_REFRESH_MIN_INTERVAL_MS = 15 * 1000;
+const CHAT_FOCUS_SYNC_COOLDOWN_MS = 8 * 1000;
+const rtdbBase = getRtdbRoot();
+const buildRtdbUrl = (path) => `${rtdbBase}/${String(path || "").replace(/^\/+/, "")}.json`;
 
-const buildContactsSessionKey = (schoolCode, tab) => {
-  return `all_chat_contacts_${String(schoolCode || "global").toUpperCase()}_${String(tab || "student").toLowerCase()}`;
-};
-
-const buildUnreadSessionKey = (schoolCode, teacherUserId, tab) => {
-  return `all_chat_unread_${String(schoolCode || "global").toUpperCase()}_${String(teacherUserId || "").trim()}_${String(tab || "student").toLowerCase()}`;
-};
-
-const mergeChatMessages = (...groups) => {
-  const merged = new Map();
-
-  groups
-    .flat()
-    .filter(Boolean)
-    .forEach((message) => {
-      const key = String(message?.id || message?.messageId || "").trim();
-      if (!key) return;
-
-      const previous = merged.get(key) || {};
-      merged.set(key, {
-        ...previous,
-        ...message,
-        id: key,
-        messageId: key,
-      });
-    });
-
-  return [...merged.values()].sort(
-    (leftMessage, rightMessage) =>
-      Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0)
-  );
-};
-
-const collectStudentParentLinks = (student = {}) => {
-  const rawStudent = student?.raw || student || {};
-  const links = [];
-
-  const pushLink = (candidate = {}, fallbackParentId = "") => {
-    const parentId = normalizeIdentifier(candidate?.parentId || candidate?.id || fallbackParentId);
-    const userId = normalizeIdentifier(candidate?.userId || candidate?.parentUserId);
-    const name = String(candidate?.name || candidate?.parentName || "").trim();
-    const phone = String(candidate?.phone || candidate?.parentPhone || candidate?.phoneNumber || "").trim();
-    const profileImage = resolveProfileImage(
-      candidate?.profileImage,
-      candidate?.profile,
-      candidate?.parentProfileImage
-    );
-
-    if (!parentId && !userId && !name && !phone && profileImage === DEFAULT_PROFILE_IMAGE) {
-      return;
-    }
-
-    links.push({
-      parentId,
-      userId,
-      name,
-      phone,
-      profileImage,
-    });
-  };
-
-  pushLink({
-    parentId: rawStudent?.parentId,
-    userId: rawStudent?.parentUserId,
-    name: rawStudent?.parentName,
-    phone: rawStudent?.parentPhone,
-    parentProfileImage: rawStudent?.parentProfileImage,
-  });
-
-  Object.entries(rawStudent?.parents || {}).forEach(([parentKey, link]) => {
-    pushLink(link, parentKey);
-  });
-
-  const guardianParents = rawStudent?.parentGuardianInformation?.parents;
-  if (Array.isArray(guardianParents)) {
-    guardianParents.forEach((link) => pushLink(link));
-  } else if (guardianParents && typeof guardianParents === "object") {
-    Object.entries(guardianParents).forEach(([parentKey, link]) => {
-      pushLink(link, parentKey);
-    });
-  }
-
-  const deduped = [];
-  const seen = new Set();
-  links.forEach((link) => {
-    const key = `${link.parentId}__${link.userId}__${link.name}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    deduped.push(link);
-  });
-
-  return deduped;
-};
-
-/* ================= FIREBASE ================= */
-
-export default function TeacherAllChat() {
+/**
+ * AllChat main orchestration component for teacher chat UI.
+ * Handles chat state, message CRUD, presence, and layout.
+ *
+ * @returns {JSX.Element}
+ */
+export default function AllChat() {
+  // Error notification state
+  const [errorMessage, setErrorMessage] = useState("");
   const navigate = useNavigate();
   const location = useLocation();
-  const chatEndRef = useRef(null);
-  const chatMessagesRef = useRef(null);
+
+  // basic refs and state (minimal set to avoid ReferenceErrors)
+  const lastSyncedChatMessageKeyRef = useRef("");
   const chatScrollRestoreRef = useRef(null);
-  const imageInputRef = useRef(null);
-  const contactScrollRef = useRef(null);
   const longPressTimerRef = useRef(null);
   const longPressTriggeredRef = useRef(false);
-  const lastContactScrollTopRef = useRef(0);
-  const suppressAutoCardToggleRef = useRef(false);
-  const autoCardToggleTimeoutRef = useRef(null);
+  const chatMessagesRef = useRef(null);
+  const chatEndRef = useRef(null);
+  const imageInputRef = useRef(null);
+  const contactScrollRef = useRef(null);
+  const previousContactScrollTopRef = useRef(0);
+  const searchCardDebounceTimerRef = useRef(null);
+  const searchCardIdleTimerRef = useRef(null);
+  const lastUnreadRefreshAtRef = useRef(0);
+  const lastForcedChatSyncAtRef = useRef(0);
+
   const lastChatActivityAtRef = useRef(Date.now());
-  const lastSyncedChatMessageKeyRef = useRef("");
 
-  const teacher = JSON.parse(localStorage.getItem("teacher")) || {};
-  const teacherUserId = String(teacher.userId || "");
-  const teacherSchoolCode = String(teacher.schoolCode || "").trim();
-  const [resolvedSchoolCode, setResolvedSchoolCode] = useState("");
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const resolveSchoolCode = async () => {
-      if (!teacherSchoolCode) {
-        setResolvedSchoolCode("");
-        return;
-      }
-
-      const resolved = await resolveTeacherSchoolCode(teacherSchoolCode);
-      if (!cancelled) {
-        setResolvedSchoolCode(resolved);
-      }
-    };
-
-    resolveSchoolCode();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [teacherSchoolCode]);
-
-  useEffect(() => {
-    const markChatActivity = () => {
-      lastChatActivityAtRef.current = Date.now();
-    };
-
-    const handleVisibilityChange = () => {
-      if (typeof document === "undefined" || document.visibilityState !== "visible") {
-        return;
-      }
-      markChatActivity();
-    };
-
-    window.addEventListener("focus", markChatActivity);
-    window.addEventListener("online", markChatActivity);
-    window.addEventListener("pointerdown", markChatActivity, { passive: true });
-    window.addEventListener("touchstart", markChatActivity, { passive: true });
-    window.addEventListener("keydown", markChatActivity);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
-    return () => {
-      window.removeEventListener("focus", markChatActivity);
-      window.removeEventListener("online", markChatActivity);
-      window.removeEventListener("pointerdown", markChatActivity);
-      window.removeEventListener("touchstart", markChatActivity);
-      window.removeEventListener("keydown", markChatActivity);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!resolvedSchoolCode) return;
-    const current = JSON.parse(localStorage.getItem("teacher") || "{}");
-    if (String(current?.schoolCode || "") === resolvedSchoolCode) return;
-
-    const nextTeacher = {
-      ...current,
-      schoolCode: resolvedSchoolCode,
-    };
-    localStorage.setItem("teacher", JSON.stringify(nextTeacher));
-  }, [resolvedSchoolCode]);
-
-  const rtdbBase = useMemo(() => {
-    if (resolvedSchoolCode) {
-      return `${RTDB_BASE_RAW}/Platform1/Schools/${resolvedSchoolCode}`;
-    }
-    return getRtdbRoot();
-  }, [resolvedSchoolCode]);
-
-  const [students, setStudents] = useState([]);
-  const [parents, setParents] = useState([]);
-  const [admins, setAdmins] = useState([]);
+  const [selectedChatUser, setSelectedChatUser] = useState(null);
+  const { teacher, teacherUserId, teacherSchoolCode } = useTeacherSession();
   const [liveMessages, setLiveMessages] = useState([]);
   const [olderMessages, setOlderMessages] = useState([]);
-  const [input, setInput] = useState("");
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [presence, setPresence] = useState({}); // userId -> presence info (bool or object)
-  const [isMobile, setIsMobile] = useState(false);
-  const [unreadCounts, setUnreadCounts] = useState({}); // userId -> number
-  const [loadingContacts, setLoadingContacts] = useState(false);
-  const [loadedTabs, setLoadedTabs] = useState({ student: false, parent: false, admin: false });
-  const [searchText, setSearchText] = useState("");
-  const [selectedStudentGrade, setSelectedStudentGrade] = useState("All");
-  const [selectedStudentSection, setSelectedStudentSection] = useState("All");
-  const [showStudentFilters, setShowStudentFilters] = useState(false);
-  const [showSearchFilterCard, setShowSearchFilterCard] = useState(true);
-  const [chatLoading, setChatLoading] = useState(false);
-  const [chatLoadingOlder, setChatLoadingOlder] = useState(false);
-  const [chatHasOlder, setChatHasOlder] = useState(false);
-
-  // incoming navigation state (support both { contact } and { user })
-  const locationState = location.state || {};
-  const incomingContact = locationState.contact || locationState.user || null;
-  const incomingChatId = locationState.chatId || null;
-  const incomingTab = locationState.tab || null;
-
-  const [selectedTab, setSelectedTab] = useState(normalizeTab(incomingTab) || "student");
-  const [selectedChatUser, setSelectedChatUser] = useState(incomingContact || null);
-  // Always compute chat key from teacher + selected receiver.
-  const [currentChatKey, setCurrentChatKey] = useState(null);
-
-  const [clickedMessageId, setClickedMessageId] = useState(null);
-  const [editingMessages, setEditingMessages] = useState({}); // { messageId: true/false }
-  const [imageSending, setImageSending] = useState(false);
-  const [previewImageUrl, setPreviewImageUrl] = useState("");
-  const [imageMenu, setImageMenu] = useState({ open: false, message: null });
-  const [textMenu, setTextMenu] = useState({ open: false, message: null });
-
   const messages = useMemo(
     () => mergeChatMessages(olderMessages, liveMessages),
     [olderMessages, liveMessages]
   );
+  const [chatHasOlder, setChatHasOlder] = useState(false);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatLoadingOlder, setChatLoadingOlder] = useState(false);
+  const [currentChatKey, setCurrentChatKey] = useState(null);
 
-  const updateLocalMessage = (messageId, updater) => {
-    const normalizedMessageId = String(messageId || "").trim();
-    if (!normalizedMessageId || typeof updater !== "function") {
-      return;
-    }
+  const [selectedTab, setSelectedTab] = useState("student");
+  const [resolvedSchoolCode, setResolvedSchoolCode] = useState("");
 
-    const applyUpdate = (messageList) =>
-      messageList.map((message) => {
-        const currentMessageId = String(message?.id || message?.messageId || "").trim();
-        return currentMessageId === normalizedMessageId ? updater(message) : message;
-      });
+  const [searchText, setSearchText] = useState("");
+  const [selectedStudentGrade, setSelectedStudentGrade] = useState("All");
+  const [selectedStudentSection, setSelectedStudentSection] = useState("All");
+  const [showStudentFilters, setShowStudentFilters] = useState(false);
+  const [showSearchFilterCard, setShowSearchFilterCard] = useState(false);
+  const [unreadCounts, setUnreadCounts] = useState({});
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
-    setLiveMessages(applyUpdate);
-    setOlderMessages(applyUpdate);
-  };
+  const [editingMessages, setEditingMessages] = useState({});
+  const [clickedMessageId, setClickedMessageId] = useState(null);
+  const [imageMenu, setImageMenu] = useState({ open: false, message: null });
+  const [textMenu, setTextMenu] = useState({ open: false, message: null });
+  const [previewImageUrl, setPreviewImageUrl] = useState("");
+  const [imageSending, setImageSending] = useState(false);
+  const [input, setInput] = useState("");
+  const refreshUnreadCountsRef = useRef(async () => {});
 
-  const buildRtdbUrl = (path) => `${rtdbBase}/${String(path || "").replace(/^\/+/, "")}.json`;
+  const { students, parents, admins, loadingContacts } = useContacts({
+    teacherUserId,
+    resolvedSchoolCode,
+    teacherSchoolCode,
+    rtdbBase,
+    selectedTab,
+    teacher,
+  });
 
-  const deleteStorageObjectByUrl = async (publicUrl) => {
-    const normalizedUrl = String(publicUrl || "").trim();
-    if (!normalizedUrl) {
-      return false;
-    }
+  // Set of all allowed userIds for message sending
+  const allowedUserIds = useMemo(
+    () =>
+      new Set([
+        ...students.map((u) => String(u.userId)),
+        ...parents.map((u) => String(u.userId)),
+        ...admins.map((u) => String(u.userId)),
+      ]),
+    [students, parents, admins]
+  );
 
-    try {
-      const response = await axios.post(`${API_BASE}/storage/delete-by-url`, {
-        publicUrl: normalizedUrl,
-      });
-      return Boolean(response?.data?.success);
-    } catch {
-      return false;
-    }
-  };
+  const unreadContactCandidates = useMemo(() => {
+    const sourceContacts = [...students, ...parents, ...admins];
+    const byUserId = new Map();
+    sourceContacts.forEach((contact) => {
+      const userId = String(contact?.userId || "").trim();
+      if (!userId || byUserId.has(userId)) return;
+      byUserId.set(userId, contact);
+    });
+    return Array.from(byUserId.values());
+  }, [students, parents, admins]);
 
-  const buildChatMessageRows = (messagesNode = {}) => {
-    return Object.entries(messagesNode || {})
-      .map(([id, message]) => ({
-        id,
-        messageId: id,
-        ...message,
-        isTeacher: message?.senderId === teacherUserId,
-      }))
-      .sort(
-        (leftMessage, rightMessage) =>
-          Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0)
-      );
-  };
+  const unreadContactCandidatesKey = useMemo(
+    () => unreadContactCandidates.map((contact) => String(contact?.userId || "").trim()).sort().join("|"),
+    [unreadContactCandidates]
+  );
 
-  const createMessageId = () => {
-    return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-  };
+  const createMessageId = useCallback(
+    () => `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    []
+  );
 
-  const fetchChatMessagesPage = async ({ chatKey, beforeMessageKey, afterMessageKey } = {}) => {
-    if (!chatKey) {
-      return { messages: [], overflowed: false };
-    }
+  const fetchChatMessagesPage = useCallback(async ({ chatKey, beforeMessageKey, afterMessageKey }) => {
+    if (!chatKey) return { messages: [], overflowed: false };
 
     const response = await axios.get(buildRtdbUrl(`Chats/${chatKey}/messages`), {
       params: buildChatMessageQuery({
@@ -555,616 +177,60 @@ export default function TeacherAllChat() {
         afterMessageKey,
       }),
     });
-    const messagesNode = response?.data && typeof response.data === "object" ? response.data : {};
-    const messageList = filterChatMessageRows(buildChatMessageRows(messagesNode), {
+
+    const messageRows = Object.entries(response?.data || {})
+      .map(([id, message]) => ({
+        id,
+        messageId: id,
+        ...message,
+        isTeacher: message?.senderId === teacherUserId,
+      }))
+      .sort((leftMessage, rightMessage) => Number(leftMessage?.timeStamp || 0) - Number(rightMessage?.timeStamp || 0));
+
+    const page = filterChatMessageRows(messageRows, {
       beforeMessageKey,
       afterMessageKey,
     });
 
     return {
-      messages: messageList,
-      overflowed: Boolean(afterMessageKey) && messageList.length > CHAT_HISTORY_PAGE_SIZE,
+      messages: page,
+      overflowed: Boolean(afterMessageKey) && page.length > CHAT_HISTORY_PAGE_SIZE,
     };
-  };
+  }, [teacherUserId]);
 
-  const patchChatSummary = async (ownerUserId, chatKey, patch) => {
+  const patchChatSummary = useCallback(async (ownerUserId, chatKey, patch) => {
     const normalizedOwnerUserId = String(ownerUserId || "").trim();
-    if (!normalizedOwnerUserId || !chatKey || !patch || typeof patch !== "object") {
-      return;
-    }
+    if (!normalizedOwnerUserId || !chatKey || !patch || typeof patch !== "object") return;
 
     await axios.patch(buildRtdbUrl(buildChatSummaryPath(normalizedOwnerUserId, chatKey)), patch);
-  };
+  }, []);
 
-  const updateChatParticipants = async (chatKey, participantIds = []) => {
-    const participantPatch = (participantIds || []).reduce((result, participantId) => {
-      const normalizedParticipantId = String(participantId || "").trim();
-      if (normalizedParticipantId) {
-        result[normalizedParticipantId] = true;
-      }
-      return result;
-    }, {});
-
-    if (!Object.keys(participantPatch).length) {
-      return;
-    }
-
-    await axios.patch(buildRtdbUrl(`Chats/${chatKey}/participants`), participantPatch);
-  };
-
-  const syncTeacherSummaryCache = (chatKey) => {
+  const syncTeacherSummaryCache = useCallback((chatKey) => {
+    if (!chatKey || !teacherUserId) return;
     clearCachedChatSummary({
       rtdbBase,
       chatId: chatKey,
       teacherUserId,
     });
-  };
+  }, [teacherUserId]);
 
-  const getProfileImage = (user = {}) =>
-    sanitizeProfileImage(user.profileImage || user.profile || user.avatar || DEFAULT_PROFILE_IMAGE);
+  const updateLocalMessage = useCallback((targetId, updater) => {
+    const normalizeMessageId = (message) => String(message?.id || message?.messageId || "").trim();
+    const normalizedTargetId = String(targetId || "").trim();
 
-  const allowedUserIds = useMemo(() => {
-    const ids = new Set();
-    students.forEach((s) => ids.add(String(s.userId || "")));
-    parents.forEach((p) => ids.add(String(p.userId || "")));
-    admins.forEach((a) => ids.add(String(a.userId || "")));
-    return ids;
-  }, [students, parents, admins]);
+    const applyUpdate = (messagesSource) =>
+      messagesSource.map((message) => {
+        if (normalizeMessageId(message) !== normalizedTargetId) return message;
+        return updater(message);
+      });
 
-  const availableStudentGrades = useMemo(() => {
-    return [...new Set(students.map((s) => String(s?.grade || "").trim()).filter(Boolean))].sort((a, b) => {
-      const numericDiff = Number(a) - Number(b);
-      if (!Number.isNaN(numericDiff) && numericDiff !== 0) return numericDiff;
-      return a.localeCompare(b);
-    });
-  }, [students]);
-
-  const availableStudentSections = useMemo(() => {
-    const base = selectedStudentGrade === "All"
-      ? students
-      : students.filter((s) => String(s?.grade || "").trim() === selectedStudentGrade);
-    return [...new Set(base.map((s) => String(s?.section || "").trim().toUpperCase()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  }, [students, selectedStudentGrade]);
-
-  useEffect(() => {
-    if (selectedStudentSection === "All") return;
-    if (!availableStudentSections.includes(selectedStudentSection)) {
-      setSelectedStudentSection("All");
-    }
-  }, [availableStudentSections, selectedStudentSection]);
-
-  useEffect(() => {
-    return () => {
-      if (autoCardToggleTimeoutRef.current) {
-        clearTimeout(autoCardToggleTimeoutRef.current);
-      }
-    };
+    setLiveMessages((previousMessages) => applyUpdate(previousMessages));
+    setOlderMessages((previousMessages) => applyUpdate(previousMessages));
   }, []);
 
-  useEffect(() => {
-    suppressAutoCardToggleRef.current = false;
-    if (autoCardToggleTimeoutRef.current) {
-      clearTimeout(autoCardToggleTimeoutRef.current);
-      autoCardToggleTimeoutRef.current = null;
-    }
-    setShowSearchFilterCard(true);
-    lastContactScrollTopRef.current = 0;
-  }, [selectedTab]);
+  
 
-  const setSearchFilterCardVisibility = (nextVisible) => {
-    if (showSearchFilterCard === nextVisible) return;
-
-    suppressAutoCardToggleRef.current = true;
-    if (autoCardToggleTimeoutRef.current) {
-      clearTimeout(autoCardToggleTimeoutRef.current);
-    }
-
-    setShowSearchFilterCard(nextVisible);
-
-    autoCardToggleTimeoutRef.current = setTimeout(() => {
-      suppressAutoCardToggleRef.current = false;
-      autoCardToggleTimeoutRef.current = null;
-    }, 280);
-  };
-
-  const handleContactListScroll = (event) => {
-    const target = event?.currentTarget;
-    if (!target) return;
-
-    const currentTop = Number(target.scrollTop || 0);
-    const previousTop = lastContactScrollTopRef.current;
-    const delta = currentTop - previousTop;
-    const maxScrollable = Math.max(0, Number(target.scrollHeight || 0) - Number(target.clientHeight || 0));
-    const nearTop = currentTop <= 8;
-    const nearBottom = maxScrollable - currentTop <= 6;
-
-    if (maxScrollable <= 8) {
-      setSearchFilterCardVisibility(true);
-      lastContactScrollTopRef.current = currentTop;
-      return;
-    }
-
-    if (suppressAutoCardToggleRef.current) {
-      lastContactScrollTopRef.current = currentTop;
-      return;
-    }
-
-    if (nearTop) {
-      setSearchFilterCardVisibility(true);
-      lastContactScrollTopRef.current = currentTop;
-      return;
-    }
-
-    if (delta > 14 && showSearchFilterCard && !nearBottom) {
-      setSearchFilterCardVisibility(false);
-    } else if (delta < -14 && !showSearchFilterCard) {
-      setSearchFilterCardVisibility(true);
-    }
-
-    lastContactScrollTopRef.current = currentTop;
-  };
-
-  const applyContactsForTab = (tab, contacts = []) => {
-    const normalizedTab = normalizeTab(tab) || "student";
-    const nextContacts = Array.isArray(contacts) ? contacts : [];
-
-    if (normalizedTab === "student") {
-      setStudents(nextContacts);
-    } else if (normalizedTab === "parent") {
-      setParents(nextContacts);
-    } else {
-      setAdmins(nextContacts);
-    }
-
-    writeSessionResource(buildContactsSessionKey(resolvedSchoolCode || teacherSchoolCode, normalizedTab), nextContacts);
-    setLoadedTabs((previousState) => ({
-      ...previousState,
-      [normalizedTab]: true,
-    }));
-  };
-
-  const loadStudentContacts = async (courseContext) => {
-    const allowedGradeSections = extractAllowedGradeSectionsFromCourseContext(courseContext);
-    if (!allowedGradeSections.size) {
-      return [];
-    }
-
-    const studentRows = await loadStudentsByGradeSections({
-      rtdbBase,
-      schoolCode: resolvedSchoolCode || teacherSchoolCode,
-      allowedGradeSections,
-    });
-
-    return studentRows.map((studentRow) => ({
-      studentKey: studentRow.studentKey,
-      userId: studentRow.userId,
-      studentId: studentRow.studentId,
-      name: studentRow.name,
-      profileImage: studentRow.profileImage,
-      grade: studentRow.grade,
-      section: studentRow.section,
-      raw: studentRow.raw,
-      user: studentRow.user || null,
-      type: "student",
-    }));
-  };
-
-  const loadParentContacts = async (courseContext) => {
-    const studentContacts = students.length ? students : await loadStudentContacts(courseContext);
-    if (!students.length && studentContacts.length) {
-      writeSessionResource(
-        buildContactsSessionKey(resolvedSchoolCode || teacherSchoolCode, "student"),
-        studentContacts
-      );
-    }
-
-    const parentIdentifiers = [...new Set(
-      studentContacts
-        .flatMap((studentContact) => collectStudentParentLinks(studentContact))
-        .flatMap((link) => [link?.parentId, link?.userId])
-        .map(normalizeIdentifier)
-        .filter(Boolean)
-    )];
-
-    if (!parentIdentifiers.length) {
-      return [];
-    }
-
-    const parentRecordsById = await loadParentRecordsByIds({
-      rtdbBase,
-      schoolCode: resolvedSchoolCode || teacherSchoolCode,
-      parentIds: parentIdentifiers,
-    });
-    const parentRecordList = Object.values(parentRecordsById || {});
-    const parentUserIds = [...new Set(
-      parentRecordList
-        .map((parentRecord) => normalizeIdentifier(parentRecord?.userId))
-        .filter(Boolean)
-    )];
-    const parentUsersById = await loadUserRecordsByIds({
-      rtdbBase,
-      schoolCode: resolvedSchoolCode || teacherSchoolCode,
-      userIds: parentUserIds,
-    });
-
-    const contactsById = new Map();
-
-    studentContacts.forEach((studentContact) => {
-      collectStudentParentLinks(studentContact).forEach((link) => {
-        const normalizedParentId = normalizeIdentifier(link?.parentId);
-        const normalizedParentUserId = normalizeIdentifier(link?.userId);
-        const parentRecord = parentRecordList.find((candidateRecord) => {
-          const refs = [candidateRecord?.parentId, candidateRecord?.userId]
-            .map(normalizeIdentifier)
-            .filter(Boolean);
-          return refs.includes(normalizedParentId) || refs.includes(normalizedParentUserId);
-        }) || null;
-
-        const parentUser = parentUsersById[normalizeIdentifier(parentRecord?.userId)] || null;
-        const contactUserId = normalizeIdentifier(
-          parentUser?.userId || parentRecord?.userId || normalizedParentUserId || normalizedParentId
-        );
-        if (!contactUserId) {
-          return;
-        }
-
-        if (contactsById.has(contactUserId)) {
-          return;
-        }
-
-        const displayName =
-          parentUser?.name ||
-          parentRecord?.name ||
-          String(link?.name || "").trim() ||
-          "Parent";
-
-        contactsById.set(contactUserId, {
-          userId: contactUserId,
-          parentId: normalizeIdentifier(parentRecord?.parentId || normalizedParentId),
-          name: displayName,
-          profileImage: resolveAvatarSrc(
-            parentUser?.profileImage ||
-              parentUser?.profile ||
-              parentUser?.avatar ||
-              parentRecord?.profileImage ||
-              parentRecord?.profile ||
-              link?.profileImage,
-            displayName
-          ),
-          type: "parent",
-        });
-      });
-    });
-
-    return [...contactsById.values()].sort((leftContact, rightContact) => leftContact.name.localeCompare(rightContact.name));
-  };
-
-  const loadAdminContacts = async () => {
-    const [schoolAdminsNode, managementNode, hrNode, registerersNode] = await Promise.all([
-      fetchCachedJson(`${rtdbBase}/School_Admins.json`, { ttlMs: CONTACTS_SESSION_TTL_MS, fallbackValue: {} }),
-      fetchCachedJson(`${rtdbBase}/Management.json`, { ttlMs: CONTACTS_SESSION_TTL_MS, fallbackValue: {} }),
-      fetchCachedJson(`${rtdbBase}/HR.json`, { ttlMs: CONTACTS_SESSION_TTL_MS, fallbackValue: {} }),
-      fetchCachedJson(`${rtdbBase}/Registerers.json`, { ttlMs: CONTACTS_SESSION_TTL_MS, fallbackValue: {} }),
-    ]);
-
-    const managementCandidates = [];
-    Object.entries(schoolAdminsNode || {}).forEach(([recordKey, record]) => {
-      managementCandidates.push({ source: "school_admin", recordKey, record });
-    });
-    Object.entries(managementNode || {}).forEach(([recordKey, record]) => {
-      managementCandidates.push({ source: "management", recordKey, record });
-    });
-    Object.entries(hrNode || {}).forEach(([recordKey, record]) => {
-      managementCandidates.push({ source: "hr", recordKey, record });
-    });
-    Object.entries(registerersNode || {}).forEach(([recordKey, record]) => {
-      managementCandidates.push({ source: "registerer", recordKey, record });
-    });
-
-    const userIdentifiers = [...new Set(
-      managementCandidates
-        .flatMap(({ recordKey, record }) => [
-          record?.userId,
-          record?.userID,
-          record?.uid,
-          record?.account?.userId,
-          record?.systemAccountInformation?.userId,
-          recordKey,
-          record?.adminId,
-          record?.managementId,
-          record?.hrId,
-          record?.registererId,
-        ])
-        .map(normalizeIdentifier)
-        .filter(Boolean)
-    )];
-
-    const usersById = await loadUserRecordsByIds({
-      rtdbBase,
-      schoolCode: resolvedSchoolCode || teacherSchoolCode,
-      userIds: userIdentifiers,
-    });
-
-    const contactMap = new Map();
-    managementCandidates.forEach(({ source, recordKey, record }) => {
-      const userId = pickFirstNonEmpty(
-        record?.userId,
-        record?.userID,
-        record?.uid,
-        record?.account?.userId,
-        record?.systemAccountInformation?.userId,
-        usersById[recordKey]?.userId,
-        usersById[record?.adminId || ""]?.userId,
-        usersById[record?.managementId || ""]?.userId,
-        usersById[record?.hrId || ""]?.userId,
-        usersById[record?.registererId || ""]?.userId,
-        recordKey
-      );
-      const user = usersById[userId] || usersById[recordKey] || {};
-      const resolvedUserId = normalizeIdentifier(user?.userId || userId);
-      if (!resolvedUserId) {
-        return;
-      }
-
-      if (!isActiveRecord(record || user)) {
-        return;
-      }
-
-      const eligible = source === "school_admin"
-        ? isAcademicAdmin({ schoolAdmin: record, user }) || isManagementEligible({ source, record, user })
-        : isManagementEligible({ source, record, user });
-      if (!eligible) {
-        return;
-      }
-
-      if (contactMap.has(resolvedUserId)) {
-        return;
-      }
-
-      const name = user?.name || record?.name || record?.title || "Management";
-      contactMap.set(resolvedUserId, {
-        userId: resolvedUserId,
-        name,
-        profileImage: resolveAvatarSrc(
-          user?.profileImage || user?.profile || user?.avatar || record?.profileImage || record?.profile,
-          name
-        ),
-        title: record?.title || user?.title || user?.role || source.replace("_", " "),
-        source,
-        type: "admin",
-      });
-    });
-
-    return [...contactMap.values()].sort((leftContact, rightContact) => leftContact.name.localeCompare(rightContact.name));
-  };
-
-  /* ================= FETCH USERS ================= */
-  useEffect(() => {
-    if (!teacherUserId || !resolvedSchoolCode) return;
-
-    const normalizedTab = normalizeTab(selectedTab) || "student";
-    const currentContacts = normalizedTab === "student" ? students : normalizedTab === "parent" ? parents : admins;
-    const cachedContacts = readSessionResource(
-      buildContactsSessionKey(resolvedSchoolCode || teacherSchoolCode, normalizedTab),
-      { ttlMs: CONTACTS_SESSION_TTL_MS }
-    );
-
-    if (Array.isArray(cachedContacts) && !loadedTabs[normalizedTab]) {
-      applyContactsForTab(normalizedTab, cachedContacts);
-      return;
-    }
-
-    if (loadedTabs[normalizedTab] || currentContacts.length) {
-      return;
-    }
-
-    let cancelled = false;
-
-    const fetchUsers = async () => {
-      try {
-        setLoadingContacts(true);
-        const courseContext = normalizedTab === "admin"
-          ? null
-          : await getTeacherCourseContext({ teacher, rtdbBase });
-
-        let nextContacts = [];
-        if (normalizedTab === "student") {
-          nextContacts = await loadStudentContacts(courseContext);
-        } else if (normalizedTab === "parent") {
-          nextContacts = await loadParentContacts(courseContext);
-        } else {
-          nextContacts = await loadAdminContacts();
-        }
-
-        if (!cancelled) {
-          applyContactsForTab(normalizedTab, nextContacts);
-        }
-      } catch (err) {
-        console.error("❌ Fetch error:", err);
-        if (!cancelled) {
-          applyContactsForTab(normalizedTab, []);
-        }
-      } finally {
-        if (!cancelled) {
-          setLoadingContacts(false);
-        }
-      }
-    };
-
-    fetchUsers();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    teacherUserId,
-    teacherSchoolCode,
-    resolvedSchoolCode,
-    rtdbBase,
-    selectedTab,
-    loadedTabs,
-    admins,
-    parents,
-    students,
-  ]);
-
-  useEffect(() => {
-    if (!selectedChatUser?.userId) return;
-    if (!loadedTabs[normalizeTab(selectedTab) || "student"]) return;
-    if (!allowedUserIds.has(String(selectedChatUser.userId || ""))) {
-      lastSyncedChatMessageKeyRef.current = "";
-      setSelectedChatUser(null);
-      setCurrentChatKey(null);
-      setLiveMessages([]);
-      setOlderMessages([]);
-      setChatHasOlder(false);
-    }
-  }, [allowedUserIds, loadedTabs, selectedChatUser, selectedTab]);
-
-  /* ================= UNREAD COUNTS ================= */
-  useEffect(() => {
-    if (!teacherUserId || !resolvedSchoolCode) return;
-
-    const normalizedTab = normalizeTab(selectedTab) || "student";
-    const contacts = normalizedTab === "student" ? students : normalizedTab === "parent" ? parents : admins;
-    const cachedUnreadCounts = readSessionResource(
-      buildUnreadSessionKey(resolvedSchoolCode || teacherSchoolCode, teacherUserId, normalizedTab),
-      { ttlMs: UNREAD_SUMMARY_TTL_MS }
-    );
-
-    if (cachedUnreadCounts && typeof cachedUnreadCounts === "object") {
-      setUnreadCounts((previousCounts) => ({
-        ...previousCounts,
-        ...cachedUnreadCounts,
-      }));
-    }
-
-    if (!contacts.length) {
-      return;
-    }
-
-    let cancelled = false;
-
-    const refreshUnreadCounts = async ({ force = false } = {}) => {
-      const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
-      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
-      if (!force && (!isVisible || !isOnline)) {
-        return;
-      }
-
-      try {
-        const summaries = await fetchTeacherConversationSummaries({
-          rtdbBase,
-          schoolCode: resolvedSchoolCode || teacherSchoolCode,
-          teacherUserId,
-          contactCandidates: contacts,
-        });
-        const resetUnreadCounts = contacts.reduce((result, contact) => {
-          const userId = normalizeIdentifier(contact?.userId);
-          if (userId) {
-            result[userId] = 0;
-          }
-          return result;
-        }, {});
-        const nextUnreadCounts = {
-          ...resetUnreadCounts,
-          ...buildUnreadConversationMap(summaries),
-        };
-        if (!cancelled) {
-          setUnreadCounts((previousCounts) => ({
-            ...previousCounts,
-            ...nextUnreadCounts,
-          }));
-          writeSessionResource(
-            buildUnreadSessionKey(resolvedSchoolCode || teacherSchoolCode, teacherUserId, normalizedTab),
-            nextUnreadCounts
-          );
-        }
-      } catch (error) {
-        console.error("Failed to refresh unread counts", error);
-      }
-    };
-
-    const handleVisibleRefresh = () => {
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
-        return;
-      }
-      void refreshUnreadCounts({ force: true });
-    };
-
-    void refreshUnreadCounts({ force: true });
-    const intervalId = window.setInterval(() => {
-      void refreshUnreadCounts();
-    }, UNREAD_SUMMARY_TTL_MS);
-    window.addEventListener("focus", handleVisibleRefresh);
-    window.addEventListener("online", handleVisibleRefresh);
-    document.addEventListener("visibilitychange", handleVisibleRefresh);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-      window.removeEventListener("focus", handleVisibleRefresh);
-      window.removeEventListener("online", handleVisibleRefresh);
-      document.removeEventListener("visibilitychange", handleVisibleRefresh);
-    };
-  }, [admins, parents, resolvedSchoolCode, rtdbBase, selectedTab, students, teacherSchoolCode, teacherUserId]);
-
-  // responsive: detect mobile and auto-collapse sidebar
-  useEffect(() => {
-    const handleResize = () => {
-      const mobile = typeof window !== "undefined" && window.innerWidth < 640;
-      setIsMobile(mobile);
-      if (mobile) setSidebarOpen(false);
-    };
-
-    handleResize();
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
-
-  /* ================= AUTO SELECT ================= */
-  // If navigation provided a contact, prefer it (incomingContact)
-  useEffect(() => {
-    if (incomingContact) {
-      setSelectedChatUser(incomingContact);
-    }
-    if (incomingTab) {
-      setSelectedTab(normalizeTab(incomingTab) || "student");
-    }
-    if (incomingChatId) {
-      setCurrentChatKey(String(incomingChatId));
-      return;
-    }
-    if (teacherUserId && incomingContact?.userId) {
-      const tabForNav = normalizeTab(incomingTab) || "student";
-      setCurrentChatKey(getChatIdForTab(tabForNav, teacherUserId, incomingContact.userId));
-    } else {
-      setCurrentChatKey(null);
-    }
-  }, [incomingContact, incomingChatId, incomingTab, teacherUserId]);
-
-  // When lists load and no explicit selectedChatUser, auto-pick first item for tab
-  // Remove auto-select: user must manually choose who to chat with
-
-  // If navigation gave a user and lists are ready, find the matching entry and select it
-  useEffect(() => {
-    const incoming = incomingContact;
-    if (!incoming) return;
-    if (selectedTab === "student" && students.length) {
-      const found = students.find((s) => s.userId === incoming.userId);
-      if (found) setSelectedChatUser(found);
-    }
-    if (selectedTab === "parent" && parents.length) {
-      const found = parents.find((p) => p.userId === incoming.userId);
-      if (found) setSelectedChatUser(found);
-    }
-    if (selectedTab === "admin" && admins.length) {
-      const found = admins.find((a) => a.userId === incoming.userId);
-      if (found) setSelectedChatUser(found);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [students, parents, admins, incomingContact, selectedTab]);
-
-  /* ================= CHAT LISTENER ================= */
+/* ================= CHAT LISTENER ================= */
   useEffect(() => {
     if (!selectedChatUser || !teacherUserId) {
       lastSyncedChatMessageKeyRef.current = "";
@@ -1240,6 +306,10 @@ export default function TeacherAllChat() {
             return nextMessages;
           });
         }
+
+        if (afterMessageKey && appliedMessages.length) {
+          void refreshUnreadCountsRef.current({ force: true });
+        }
         setChatLoading(false);
 
         const unseenIncomingMessages = appliedMessages.filter(
@@ -1312,6 +382,11 @@ export default function TeacherAllChat() {
       if (typeof document !== "undefined" && document.visibilityState !== "visible") {
         return;
       }
+      const now = Date.now();
+      if (now - lastForcedChatSyncAtRef.current < CHAT_FOCUS_SYNC_COOLDOWN_MS) {
+        return;
+      }
+      lastForcedChatSyncAtRef.current = now;
       lastChatActivityAtRef.current = Date.now();
       void syncLatestMessages({ force: true });
     };
@@ -1331,16 +406,285 @@ export default function TeacherAllChat() {
       window.removeEventListener("online", handleFocusedRefresh);
       document.removeEventListener("visibilitychange", handleFocusedRefresh);
     };
-  }, [selectedChatUser, teacherUserId, currentChatKey, selectedTab, resolvedSchoolCode, teacherSchoolCode]);
+  }, [selectedChatUser, teacherUserId, currentChatKey, selectedTab]);
 
-  const loadOlderMessages = async () => {
-    if (
-      chatLoading ||
-      chatLoadingOlder ||
-      !selectedChatUser ||
-      !teacherUserId ||
-      messages.length === 0
-    ) {
+  
+
+  const getActiveChatKey = useCallback(() => {
+    if (!selectedChatUser || !teacherUserId) return null;
+    return (
+      currentChatKey ||
+      getChatIdForTab(normalizeTab(selectedTab) || "student", teacherUserId, selectedChatUser.userId)
+    );
+  }, [selectedChatUser, teacherUserId, currentChatKey, selectedTab]);
+
+  const { presence } = usePresence({
+    contacts: { students, parents, admins, selectedTab },
+    selectedChatUser,
+    rtdbBase,
+    lastChatActivityAtRef,
+  });
+
+  useEffect(() => {
+    if (!teacherUserId || !rtdbBase) return undefined;
+
+    const unreadSessionKey = buildUnreadSessionKey(resolvedSchoolCode || teacherSchoolCode, selectedTab);
+    const cachedUnread = readSessionResource(unreadSessionKey, { ttlMs: UNREAD_SUMMARY_TTL_MS });
+    if (cachedUnread && typeof cachedUnread === "object") {
+      setUnreadCounts(cachedUnread);
+    }
+
+    let cancelled = false;
+
+    const refreshUnreadCounts = async ({ force = false, hard = false } = {}) => {
+      if (!force && typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+
+      const now = Date.now();
+      if (!hard && now - lastUnreadRefreshAtRef.current < UNREAD_REFRESH_MIN_INTERVAL_MS) {
+        return;
+      }
+
+      try {
+        const conversations = await fetchTeacherConversationSummaries({
+          rtdbBase,
+          teacherUserId,
+          schoolCode: resolvedSchoolCode || teacherSchoolCode,
+          contactCandidates: unreadContactCandidates,
+          unreadOnly: true,
+          force,
+        });
+
+        if (cancelled) return;
+
+        const unreadMap = buildUnreadConversationMap(conversations);
+        if (selectedChatUser?.userId) {
+          unreadMap[String(selectedChatUser.userId)] = 0;
+        }
+
+        setUnreadCounts(unreadMap);
+        writeSessionResource(unreadSessionKey, unreadMap);
+        lastUnreadRefreshAtRef.current = Date.now();
+      } catch {
+        if (!cancelled) {
+          setUnreadCounts({});
+        }
+      }
+    };
+
+    refreshUnreadCountsRef.current = refreshUnreadCounts;
+    void refreshUnreadCounts({ force: true, hard: true });
+
+    const handleFocusedUnreadRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      void refreshUnreadCounts({ force: true });
+    };
+
+    const handleVisibilityUnreadRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        void refreshUnreadCounts({ force: true });
+      }
+    };
+
+    window.addEventListener("focus", handleFocusedUnreadRefresh);
+    window.addEventListener("online", handleFocusedUnreadRefresh);
+    document.addEventListener("visibilitychange", handleVisibilityUnreadRefresh);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", handleFocusedUnreadRefresh);
+      window.removeEventListener("online", handleFocusedUnreadRefresh);
+      document.removeEventListener("visibilitychange", handleVisibilityUnreadRefresh);
+    };
+  }, [
+    teacherUserId,
+    rtdbBase,
+    resolvedSchoolCode,
+    teacherSchoolCode,
+    selectedTab,
+    selectedChatUser?.userId,
+    unreadContactCandidatesKey,
+  ]);
+
+  /* ================= SEND MESSAGE ================= */
+  const sendMessage = useCallback(async () => {
+    if (!input.trim() || !selectedChatUser) return;
+    if (!allowedUserIds.has(String(selectedChatUser.userId || ""))) return;
+
+    const editingId = Object.keys(editingMessages).find((id) => editingMessages[id]);
+    const chatKey = getActiveChatKey();
+    if (!chatKey) return;
+
+    if (editingId) {
+      // Update existing message
+      try {
+        await chatService.editMessage({
+          chatKey,
+          messageId: editingId,
+          newText: input,
+          buildRtdbUrl,
+        });
+        setLiveMessages((previousMessages) =>
+          previousMessages.map((message) =>
+            String(message?.id || "") === String(editingId)
+              ? { ...message, text: input, edited: true }
+              : message
+          )
+        );
+        setEditingMessages({});
+        setClickedMessageId(null);
+        setInput("");
+      } catch (error) {
+        setErrorMessage("Failed to edit message. Please try again.");
+      }
+    } else {
+      // Send new message
+      const messageId = createMessageId();
+      const messageData = {
+        messageId,
+        senderId: teacherUserId,
+        receiverId: selectedChatUser.userId,
+        type: "text",
+        text: input,
+        seen: false,
+        edited: false,
+        deleted: false,
+        timeStamp: Date.now(),
+      };
+      try {
+        await chatService.sendTextMessage({
+          chatKey,
+          messageId,
+          messageData,
+          teacherUserId,
+          selectedChatUser,
+          buildChatSummaryUpdate,
+          buildRtdbUrl,
+          schoolPath,
+          db,
+        });
+        syncTeacherSummaryCache(chatKey);
+        setLiveMessages((previousMessages) => {
+          const nextMessages = mergeChatMessages(previousMessages, [{ id: messageId, ...messageData, isTeacher: true }]);
+          lastSyncedChatMessageKeyRef.current = getLastChatMessageKey(nextMessages);
+          return nextMessages;
+        });
+        setInput("");
+      } catch (error) {
+        setErrorMessage("Failed to send message. Please try again.");
+      }
+    }
+  }, [input, selectedChatUser, allowedUserIds, teacherUserId, editingMessages, getActiveChatKey, syncTeacherSummaryCache]);
+
+  const sendImageMessage = useCallback(async (event) => {
+    const file = event?.target?.files?.[0];
+    if (!file || !selectedChatUser || !teacherUserId) {
+      if (event?.target) event.target.value = "";
+      return;
+    }
+    if (!allowedUserIds.has(String(selectedChatUser.userId || ""))) {
+      if (event?.target) event.target.value = "";
+      return;
+    }
+
+    const chatKey = getActiveChatKey();
+    if (!chatKey) {
+      if (event?.target) event.target.value = "";
+      return;
+    }
+
+    try {
+      setImageSending(true);
+      const messageId = createMessageId();
+      const uploadedImageUrl = await chatService.sendImageMessage({
+        chatKey,
+        messageId,
+        file,
+        compressImageToJpeg,
+        teacherUserId,
+        selectedChatUser,
+        buildChatSummaryUpdate,
+        buildRtdbUrl,
+        schoolPath,
+        db,
+      });
+      const messageData = {
+        messageId,
+        senderId: teacherUserId,
+        receiverId: selectedChatUser.userId,
+        type: "image",
+        text: "",
+        imageUrl: uploadedImageUrl,
+        seen: false,
+        edited: false,
+        deleted: false,
+        timeStamp: Date.now(),
+      };
+      syncTeacherSummaryCache(chatKey);
+      setLiveMessages((previousMessages) => {
+        const nextMessages = mergeChatMessages(previousMessages, [{ id: messageId, ...messageData, isTeacher: true }]);
+        lastSyncedChatMessageKeyRef.current = getLastChatMessageKey(nextMessages);
+        return nextMessages;
+      });
+    } catch (error) {
+      setErrorMessage("Failed to send image. Please try again.");
+    } finally {
+      setImageSending(false);
+      if (event?.target) event.target.value = "";
+    }
+  }, [selectedChatUser, teacherUserId, allowedUserIds, getActiveChatKey, syncTeacherSummaryCache]);
+
+  /* ================= EDIT / DELETE ================= */
+  const handleEditMessage = useCallback(async (id, newText) => {
+    const chatKey = getActiveChatKey();
+    if (!chatKey) return;
+    try {
+      await chatService.editMessage({
+        chatKey,
+        messageId: id,
+        newText,
+        buildRtdbUrl,
+      });
+      updateLocalMessage(id, (message) => ({ ...message, text: newText, edited: true }));
+    } catch (error) {
+      setErrorMessage("Failed to edit message. Please try again.");
+    }
+    setEditingMessages((prev) => ({ ...prev, [id]: false }));
+  }, [getActiveChatKey, updateLocalMessage]);
+
+  const handleDeleteMessage = useCallback(async (id) => {
+    const chatKey = getActiveChatKey();
+    if (!chatKey) return;
+    const targetMessage = messages.find(
+      (message) => String(message?.id || message?.messageId || "").trim() === String(id || "").trim()
+    );
+    const imageUrl = String(targetMessage?.imageUrl || "").trim();
+    try {
+      await chatService.deleteMessage({
+        chatKey,
+        messageId: id,
+        buildRtdbUrl,
+      });
+      updateLocalMessage(id, (message) => ({ ...message, deleted: true, imageUrl: "" }));
+      if (imageUrl) {
+        await chatService.deleteImage({ imageUrl, deleteStorageObjectByUrl });
+      }
+    } catch (error) {
+      setErrorMessage("Failed to delete message. Please try again.");
+    }
+  }, [messages, getActiveChatKey, updateLocalMessage]);
+
+  const startEditing = useCallback((id, text) => {
+    setEditingMessages({ [id]: true });
+    setInput(text);
+    setClickedMessageId(id);
+  }, []);
+
+  const loadOlderMessages = useCallback(async () => {
+    if (chatLoading || chatLoadingOlder || !selectedChatUser || !teacherUserId || messages.length === 0) {
       return;
     }
 
@@ -1386,361 +730,8 @@ export default function TeacherAllChat() {
     } finally {
       setChatLoadingOlder(false);
     }
-  };
+  }, [chatLoading, chatLoadingOlder, selectedChatUser, teacherUserId, messages, getActiveChatKey]);
 
-  const getActiveChatKey = () => {
-    if (!selectedChatUser || !teacherUserId) return null;
-    return (
-      currentChatKey ||
-      getChatIdForTab(normalizeTab(selectedTab) || "student", teacherUserId, selectedChatUser.userId)
-    );
-  };
-
-  /* ================= PRESENCE LISTENER ================= */
-  useEffect(() => {
-    let cancelled = false;
-
-    const activeContacts = selectedTab === "student"
-      ? students
-      : selectedTab === "parent"
-        ? parents
-        : admins;
-
-    const presenceUserIds = [...new Set([
-      ...activeContacts.map((contact) => normalizeIdentifier(contact?.userId)).filter(Boolean),
-      normalizeIdentifier(selectedChatUser?.userId),
-    ].filter(Boolean))];
-
-    if (!presenceUserIds.length) {
-      setPresence({});
-      return undefined;
-    }
-
-    const loadPresence = async ({ force = false } = {}) => {
-      const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
-      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
-      const isRecentlyActive = Date.now() - lastChatActivityAtRef.current <= CHAT_POLL_IDLE_GRACE_MS;
-      if (!force && (!isVisible || !isOnline || !isRecentlyActive)) {
-        return;
-      }
-
-      try {
-        const entries = await mapInBatches(presenceUserIds, PRESENCE_BATCH_SIZE, async (userId) => {
-          const data = await fetchCachedJson(buildRtdbUrl(`Presence/${encodeURIComponent(userId)}`), {
-            ttlMs: 60 * 1000,
-            fallbackValue: null,
-            force,
-          });
-
-          return [userId, data];
-        });
-
-        const data = entries.reduce((result, [userId, value]) => {
-          result[userId] = value;
-          return result;
-        }, {});
-
-        if (!cancelled) {
-          setPresence(data);
-        }
-      } catch (error) {
-        console.warn("Presence polling unavailable:", error);
-        if (!cancelled) {
-          setPresence({});
-        }
-      }
-    };
-
-    const handleFocusedPresenceRefresh = () => {
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
-        return;
-      }
-      lastChatActivityAtRef.current = Date.now();
-      void loadPresence({ force: true });
-    };
-
-    void loadPresence({ force: true });
-    const intervalId = window.setInterval(() => {
-      void loadPresence();
-    }, PRESENCE_POLL_INTERVAL_MS);
-    window.addEventListener("focus", handleFocusedPresenceRefresh);
-    window.addEventListener("online", handleFocusedPresenceRefresh);
-    document.addEventListener("visibilitychange", handleFocusedPresenceRefresh);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-      window.removeEventListener("focus", handleFocusedPresenceRefresh);
-      window.removeEventListener("online", handleFocusedPresenceRefresh);
-      document.removeEventListener("visibilitychange", handleFocusedPresenceRefresh);
-    };
-  }, [admins, parents, rtdbBase, selectedChatUser?.userId, selectedTab, students]);
-
-  /* ================= SEND MESSAGE ================= */
-  const sendMessage = async () => {
-    if (!input.trim() || !selectedChatUser) return;
-    if (!allowedUserIds.has(String(selectedChatUser.userId || ""))) return;
-
-    const editingId = Object.keys(editingMessages).find((id) => editingMessages[id]);
-    const chatKey = getActiveChatKey();
-    if (!chatKey) return;
-
-    if (editingId) {
-      // Update existing message
-      await axios.patch(buildRtdbUrl(`Chats/${chatKey}/messages/${editingId}`), {
-        text: input,
-        edited: true,
-      });
-      setLiveMessages((previousMessages) =>
-        previousMessages.map((message) =>
-          String(message?.id || "") === String(editingId)
-            ? { ...message, text: input, edited: true }
-            : message
-        )
-      );
-      setEditingMessages({});
-      setClickedMessageId(null);
-      setInput("");
-    } else {
-      // Send new message
-      const messageId = createMessageId();
-      const messageData = {
-        messageId,
-        senderId: teacherUserId,
-        receiverId: selectedChatUser.userId,
-        type: "text",
-        text: input,
-        seen: false,
-        edited: false,
-        deleted: false,
-        timeStamp: Date.now(),
-      };
-
-      const receiverSummaryResponse = await axios.get(
-        buildRtdbUrl(buildChatSummaryPath(selectedChatUser.userId, chatKey))
-      ).catch(() => ({ data: {} }));
-      const nextUnreadCount = Math.max(0, Number(receiverSummaryResponse?.data?.unreadCount || 0) + 1);
-
-      await axios.put(buildRtdbUrl(`Chats/${chatKey}/messages/${messageId}`), messageData);
-      await updateChatParticipants(chatKey, [teacherUserId, selectedChatUser.userId]);
-
-      await Promise.all([
-        patchChatSummary(
-          teacherUserId,
-          chatKey,
-          buildChatSummaryUpdate({
-            chatId: chatKey,
-            otherUserId: selectedChatUser.userId,
-            unreadCount: 0,
-            lastMessageText: input,
-            lastMessageType: "text",
-            lastMessageTime: messageData.timeStamp,
-            lastSenderId: teacherUserId,
-            lastMessageSeen: false,
-            lastMessageSeenAt: null,
-          })
-        ),
-        patchChatSummary(
-          selectedChatUser.userId,
-          chatKey,
-          buildChatSummaryUpdate({
-            chatId: chatKey,
-            otherUserId: teacherUserId,
-            lastMessageText: input,
-            lastMessageType: "text",
-            lastMessageTime: messageData.timeStamp,
-            lastSenderId: teacherUserId,
-            unreadCount: nextUnreadCount,
-            lastMessageSeen: false,
-            lastMessageSeenAt: null,
-          })
-        ),
-      ]);
-
-      syncTeacherSummaryCache(chatKey);
-      setLiveMessages((previousMessages) => {
-        const nextMessages = mergeChatMessages(previousMessages, [{ id: messageId, ...messageData, isTeacher: true }]);
-        lastSyncedChatMessageKeyRef.current = getLastChatMessageKey(nextMessages);
-        return nextMessages;
-      });
-
-      setInput("");
-    }
-  };
-
-  const sendImageMessage = async (event) => {
-    const file = event?.target?.files?.[0];
-    if (!file || !selectedChatUser || !teacherUserId) {
-      if (event?.target) event.target.value = "";
-      return;
-    }
-    if (!allowedUserIds.has(String(selectedChatUser.userId || ""))) {
-      if (event?.target) event.target.value = "";
-      return;
-    }
-
-    const chatKey = getActiveChatKey();
-    if (!chatKey) {
-      if (event?.target) event.target.value = "";
-      return;
-    }
-
-    try {
-      setImageSending(true);
-      let uploadedImageRef = null;
-      let uploadedImageUrl = "";
-
-      const messageId = createMessageId();
-      const timeStamp = Date.now();
-
-      const compressedBlob = await compressImageToJpeg(file, {
-        maxWidth: 1280,
-        maxHeight: 1280,
-        quality: 0.72,
-      });
-
-      uploadedImageRef = storageRef(storage, `chatImages/${chatKey}/${messageId}.jpg`);
-      await uploadBytes(uploadedImageRef, compressedBlob, { contentType: "image/jpeg" });
-      uploadedImageUrl = await getDownloadURL(uploadedImageRef);
-
-      const messageData = {
-        messageId,
-        senderId: teacherUserId,
-        receiverId: selectedChatUser.userId,
-        type: "image",
-        text: "",
-        imageUrl: uploadedImageUrl,
-        seen: false,
-        edited: false,
-        deleted: false,
-        timeStamp,
-      };
-
-      const receiverSummaryResponse = await axios.get(
-        buildRtdbUrl(buildChatSummaryPath(selectedChatUser.userId, chatKey))
-      ).catch(() => ({ data: {} }));
-      const nextUnreadCount = Math.max(0, Number(receiverSummaryResponse?.data?.unreadCount || 0) + 1);
-
-      await axios.put(buildRtdbUrl(`Chats/${chatKey}/messages/${messageId}`), messageData);
-      await updateChatParticipants(chatKey, [teacherUserId, selectedChatUser.userId]);
-
-      await Promise.all([
-        patchChatSummary(
-          teacherUserId,
-          chatKey,
-          buildChatSummaryUpdate({
-            chatId: chatKey,
-            otherUserId: selectedChatUser.userId,
-            unreadCount: 0,
-            lastMessageText: "",
-            lastMessageType: "image",
-            lastMessageTime: timeStamp,
-            lastSenderId: teacherUserId,
-            lastMessageSeen: false,
-            lastMessageSeenAt: null,
-          })
-        ),
-        patchChatSummary(
-          selectedChatUser.userId,
-          chatKey,
-          buildChatSummaryUpdate({
-            chatId: chatKey,
-            otherUserId: teacherUserId,
-            lastMessageText: "",
-            lastMessageType: "image",
-            lastMessageTime: timeStamp,
-            lastSenderId: teacherUserId,
-            unreadCount: nextUnreadCount,
-            lastMessageSeen: false,
-            lastMessageSeenAt: null,
-          })
-        ),
-      ]);
-
-      syncTeacherSummaryCache(chatKey);
-      setLiveMessages((previousMessages) => {
-        const nextMessages = mergeChatMessages(previousMessages, [{ id: messageId, ...messageData, isTeacher: true }]);
-        lastSyncedChatMessageKeyRef.current = getLastChatMessageKey(nextMessages);
-        return nextMessages;
-      });
-    } catch (error) {
-      console.error("Image send failed:", error);
-      try {
-        if (typeof uploadedImageUrl === "string" && uploadedImageUrl.trim()) {
-          await deleteStorageObjectByUrl(uploadedImageUrl);
-        } else if (uploadedImageRef) {
-          await deleteObject(uploadedImageRef);
-        }
-      } catch {
-        // ignore cleanup failures after a failed message send
-      }
-    } finally {
-      setImageSending(false);
-      if (event?.target) event.target.value = "";
-    }
-  };
-
-  /* ================= EDIT / DELETE ================= */
-  const handleEditMessage = (id, newText) => {
-    const chatKey = getActiveChatKey();
-    if (!chatKey) return;
-    axios.patch(buildRtdbUrl(`Chats/${chatKey}/messages/${id}`), {
-      text: newText,
-      edited: true,
-    }).then(() => {
-      updateLocalMessage(id, (message) => ({ ...message, text: newText, edited: true }));
-    }).catch(console.error);
-    setEditingMessages((prev) => ({ ...prev, [id]: false }));
-  };
-
-  const handleDeleteMessage = (id) => {
-    const chatKey = getActiveChatKey();
-    if (!chatKey) return;
-    const targetMessage = messages.find(
-      (message) => String(message?.id || message?.messageId || "").trim() === String(id || "").trim()
-    );
-    const imageUrl = String(targetMessage?.imageUrl || "").trim();
-
-    axios.patch(buildRtdbUrl(`Chats/${chatKey}/messages/${id}`), { deleted: true }).then(() => {
-      updateLocalMessage(id, (message) => ({ ...message, deleted: true, imageUrl: "" }));
-
-      if (imageUrl) {
-        deleteStorageObjectByUrl(imageUrl).catch(() => {
-          // ignore stale image cleanup failures
-        });
-      }
-    }).catch(console.error);
-  };
-
-  const startEditing = (id, text) => {
-    setEditingMessages({ [id]: true });
-    setInput(text);
-    setClickedMessageId(id);
-  };
-
-  const formatTime = (ts) => {
-    const date = new Date(ts);
-    let hours = date.getHours();
-    const minutes = date.getMinutes().toString().padStart(2, "0");
-    const period = hours >= 12 ? "PM" : "AM";
-    hours = hours % 12;
-    if (hours === 0) hours = 12;
-    return `${hours}:${minutes} ${period}`;
-  };
-
-  const formatDateLabel = (ts) => {
-    if (!ts) return "";
-    const msgDate = new Date(Number(ts));
-    const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const startOfMsgDay = new Date(msgDate.getFullYear(), msgDate.getMonth(), msgDate.getDate());
-    const diffMs = startOfToday - startOfMsgDay;
-    const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
-    if (diffDays === 0) return "Today";
-    if (diffDays === 1) return "Yesterday";
-    if (diffDays > 1 && diffDays < 7) return `${diffDays} days ago`;
-    return msgDate.toLocaleDateString();
-  };
 
   const displayItems = useMemo(() => {
     const items = [];
@@ -1756,46 +747,46 @@ export default function TeacherAllChat() {
     return items;
   }, [messages]);
 
-  const beginImageLongPress = (message) => {
+  const beginImageLongPress = useCallback((message) => {
     clearTimeout(longPressTimerRef.current);
     longPressTriggeredRef.current = false;
     longPressTimerRef.current = setTimeout(() => {
       longPressTriggeredRef.current = true;
       setImageMenu({ open: true, message });
     }, 520);
-  };
+  }, []);
 
-  const cancelImageLongPress = () => {
+  const cancelImageLongPress = useCallback(() => {
     clearTimeout(longPressTimerRef.current);
     longPressTimerRef.current = null;
-  };
+  }, []);
 
-  const beginTextLongPress = (message) => {
+  const beginTextLongPress = useCallback((message) => {
     clearTimeout(longPressTimerRef.current);
     longPressTriggeredRef.current = false;
     longPressTimerRef.current = setTimeout(() => {
       longPressTriggeredRef.current = true;
       setTextMenu({ open: true, message });
     }, 520);
-  };
+  }, []);
 
-  const handleTextBubbleClick = (messageId) => {
+  const handleTextBubbleClick = useCallback((messageId) => {
     if (longPressTriggeredRef.current) {
       longPressTriggeredRef.current = false;
       return;
     }
     setClickedMessageId(messageId);
-  };
+  }, []);
 
-  const handleImageClick = (imageUrl) => {
+  const handleImageClick = useCallback((imageUrl) => {
     if (longPressTriggeredRef.current) {
       longPressTriggeredRef.current = false;
       return;
     }
     setPreviewImageUrl(imageUrl);
-  };
+  }, []);
 
-  const handleDownloadImage = async (message) => {
+  const handleDownloadImage = useCallback(async (message) => {
     try {
       const url = String(message?.imageUrl || "").trim();
       if (!url) return;
@@ -1810,7 +801,7 @@ export default function TeacherAllChat() {
     } catch (error) {
       console.error("Image download failed:", error);
     }
-  };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -1857,7 +848,25 @@ export default function TeacherAllChat() {
     });
   }, [selectedTab, students, parents, admins, searchText, selectedStudentGrade, selectedStudentSection]);
 
-  const isUserOnline = (userId) => {
+  const availableStudentGrades = useMemo(() => {
+    const gradeSet = new Set();
+    students.forEach((student) => {
+      const grade = String(student?.grade || "").trim();
+      if (grade) gradeSet.add(grade);
+    });
+    return ["All", ...Array.from(gradeSet).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))];
+  }, [students]);
+
+  const availableStudentSections = useMemo(() => {
+    const sectionSet = new Set();
+    students.forEach((student) => {
+      const section = String(student?.section || "").trim().toUpperCase();
+      if (section) sectionSet.add(section);
+    });
+    return ["All", ...Array.from(sectionSet).sort((a, b) => a.localeCompare(b))];
+  }, [students]);
+
+  const isUserOnline = useCallback((userId) => {
     if (!userId) return false;
     // try to resolve presence entry for multiple key shapes
     const findPresence = () => {
@@ -1895,9 +904,9 @@ export default function TeacherAllChat() {
       }
     }
     return false;
-  };
+  }, [presence]);
 
-  const getLastSeenText = (userId) => {
+  const getLastSeenText = useCallback((userId) => {
     const p = presence?.[userId];
     if (!p) return null;
     // accept numeric timestamp or object with common timestamp keys
@@ -1915,7 +924,65 @@ export default function TeacherAllChat() {
     const days = Math.floor(hr / 24);
     if (days < 7) return `last seen ${days}d ago`;
     return `last seen on ${new Date(ts).toLocaleDateString()}`;
-  };
+  }, [presence]);
+
+  const setSearchFilterCardVisibility = useCallback((visible, { debounced = true } = {}) => {
+    if (searchCardDebounceTimerRef.current) {
+      clearTimeout(searchCardDebounceTimerRef.current);
+      searchCardDebounceTimerRef.current = null;
+    }
+
+    if (!debounced) {
+      setShowSearchFilterCard(Boolean(visible));
+      return;
+    }
+
+    searchCardDebounceTimerRef.current = setTimeout(() => {
+      setShowSearchFilterCard(Boolean(visible));
+      searchCardDebounceTimerRef.current = null;
+    }, SEARCH_CARD_DEBOUNCE_MS);
+  }, []);
+
+  const handleContactListScroll = useCallback((event) => {
+    const container = event?.currentTarget;
+    if (!container) return;
+
+    const currentTop = Number(container.scrollTop || 0);
+    const previousTop = Number(previousContactScrollTopRef.current || 0);
+    const delta = Math.abs(currentTop - previousTop);
+    previousContactScrollTopRef.current = currentTop;
+
+    if (delta < SCROLL_DELTA_THRESHOLD_PX) {
+      return;
+    }
+
+    const nearTop = currentTop <= SCROLL_NEAR_TOP_PX;
+    const remainingBottomDistance =
+      Number(container.scrollHeight || 0) - (currentTop + Number(container.clientHeight || 0));
+    const nearBottom = remainingBottomDistance <= SCROLL_NEAR_BOTTOM_PX;
+
+    setSearchFilterCardVisibility(nearTop || nearBottom, { debounced: true });
+
+    if (searchCardIdleTimerRef.current) {
+      clearTimeout(searchCardIdleTimerRef.current);
+      searchCardIdleTimerRef.current = null;
+    }
+    searchCardIdleTimerRef.current = setTimeout(() => {
+      setSearchFilterCardVisibility(false, { debounced: false });
+      searchCardIdleTimerRef.current = null;
+    }, SEARCH_CARD_IDLE_TIMEOUT_MS);
+  }, [setSearchFilterCardVisibility]);
+
+  useEffect(() => {
+    return () => {
+      if (searchCardDebounceTimerRef.current) {
+        clearTimeout(searchCardDebounceTimerRef.current);
+      }
+      if (searchCardIdleTimerRef.current) {
+        clearTimeout(searchCardIdleTimerRef.current);
+      }
+    };
+  }, []);
 
   const tabTitle = selectedTab === "admin" ? "Management" : selectedTab.charAt(0).toUpperCase() + selectedTab.slice(1);
   const listCount = list.length;
@@ -1924,521 +991,81 @@ export default function TeacherAllChat() {
 
   return (
     <div
-      style={{
-        display: "flex",
-        height: "calc(100dvh - var(--topbar-height, 0px))",
-        marginTop: "var(--topbar-height, 0px)",
-        background: "#ffffff",
-        position: "relative",
-        padding: isMobile ? 0 : 14,
-        gap: isMobile ? 0 : 12,
-        fontFamily: "Segoe UI, Arial, sans-serif",
-      }}
+      className={styles.allChatLayout}
+      aria-label="All Chat Main Layout"
     >
-      {/* ===== SIDEBAR / USER LIST ===== */}
-      <div
-        style={{
-          display:
-            isMobile && !selectedChatUser
-              ? "flex"
-              : isMobile && selectedChatUser
-              ? "none"
-              : "flex",
-          alignItems: "stretch",
-          position: isMobile && !selectedChatUser ? "fixed" : "static",
-          top: isMobile && !selectedChatUser ? "var(--topbar-height, 0px)" : 0,
-          left: 0,
-          width: isMobile && !selectedChatUser ? "100vw" : undefined,
-          height: isMobile && !selectedChatUser ? "calc(100dvh - var(--topbar-height, 0px))" : undefined,
-          background: isMobile && !selectedChatUser ? "#fff" : undefined,
-          zIndex: isMobile && !selectedChatUser ? 100 : undefined,
-        }}
-      >
-        <div
-          style={{
-            width: isMobile && !selectedChatUser ? "100vw" : sidebarOpen ? (isMobile ? 230 : 320) : 0,
-            height: isMobile && !selectedChatUser ? "calc(100dvh - var(--topbar-height, 0px))" : "auto",
-            background: "#ffffff",
-            padding: sidebarOpen || (isMobile && !selectedChatUser) ? 16 : 0,
-            boxShadow: sidebarOpen || (isMobile && !selectedChatUser) ? "0 16px 30px rgba(15, 23, 42, 0.08)" : "none",
-            border: sidebarOpen || (isMobile && !selectedChatUser) ? "1px solid #e2e8f0" : "none",
-            borderRadius: isMobile ? 0 : 22,
-            display: sidebarOpen || (isMobile && !selectedChatUser) ? "flex" : "none",
-            flexDirection: "column",
-            transition: "width 180ms ease",
-            overflowY: isMobile && !selectedChatUser ? "auto" : "visible",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 12 }}>
-            <button
-              onClick={() => navigate(-1)}
-              style={{
-                border: "1px solid #dbeafe",
-                background: "#ffffff",
-                padding: 8,
-                cursor: "pointer",
-                borderRadius: 999,
-                color: "#007AFB",
-                boxShadow: "0 2px 8px rgba(15, 23, 42, 0.08)",
-              }}
-              aria-label="Go back"
-            >
-              <FaArrowLeft size={16} />
-            </button>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 15, fontWeight: 800, color: "#0f172a" }}>Chats</div>
-              <div style={{ fontSize: 11, color: "#64748b", marginTop: 1 }}>Telegram-like focus, school-safe communication</div>
-            </div>
-          </div>
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(3, minmax(0,1fr))",
-              gap: 4,
-              paddingBlock: 4,
-              paddingInline:2,
-              marginBottom: 10,
-              alignItems: "center",
-              background: "#f8fafc",
-              border: "1px solid #e2e8f0",
-              borderRadius: 999,
-              padding: 4,
-              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.7)",
-            }}
+      {errorMessage && (
+        <div className={styles.errorBanner} role="alert" aria-live="assertive">
+          {errorMessage}
+          <button
+            className={styles.errorBannerDismiss}
+            aria-label="Dismiss error notification"
+            onClick={() => setErrorMessage("")}
           >
-            {["student", "parent", "admin"].map((t) => (
-              <button
-                key={t}
-                onClick={() => {
-                  setSelectedTab(t);
-                  setSelectedChatUser(null);
-                  setCurrentChatKey(null);
-                  if (t !== "student") {
-                    setSelectedStudentGrade("All");
-                    setSelectedStudentSection("All");
-                    setShowStudentFilters(false);
-                  }
-                }}
-                style={{
-                  padding: 8,
-                  borderRadius: 999,
-                  border: "none",
-                  background: selectedTab === t ? "#007AFB" : "transparent",
-                  color: selectedTab === t ? "#fff" : "#475569",
-                  cursor: "pointer",
-                  fontSize: 12,
-                  fontWeight: 800,
-                  letterSpacing: 0.2,
-                  boxShadow: selectedTab === t ? "0 8px 16px rgba(0,122,251,0.22)" : "none",
-                }}
-              >
-                {t === "admin" ? "Management" : t.charAt(0).toUpperCase() + t.slice(1)}
-              </button>
-            ))}
-          </div>
-
-          <div
-            style={{
-              marginTop: showSearchFilterCard ? 6 : 0,
-              marginBottom: showSearchFilterCard ? 10 : 2,
-              padding: showSearchFilterCard ? "10px 12px" : "0px 12px",
-              background: "#ffffff",
-              border: showSearchFilterCard ? "1px solid #e2e8f0" : "1px solid transparent",
-              borderRadius: 14,
-              maxHeight: showSearchFilterCard ? 360 : 0,
-              opacity: showSearchFilterCard ? 1 : 0,
-              overflow: "hidden",
-              transform: showSearchFilterCard ? "translateY(0)" : "translateY(-8px)",
-              transition: "max-height 220ms ease, opacity 200ms ease, transform 220ms ease, margin 220ms ease, padding 220ms ease, border-color 220ms ease",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, color: "#334155", fontSize: 12, fontWeight: 700 }}>
-              <span>{tabTitle} Contacts</span>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                {selectedTab === "student" ? (
-                  <button
-                    onClick={() => setShowStudentFilters((value) => !value)}
-                    style={{
-                      border: "1px solid #bfdbfe",
-                      background: showStudentFilters ? "#007AFB" : "#ffffff",
-                      color: showStudentFilters ? "#ffffff" : "#007AFB",
-                      fontSize: 10,
-                      fontWeight: 800,
-                      borderRadius: 999,
-                      padding: "4px 10px",
-                      cursor: "pointer",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 6,
-                    }}
-                  >
-                    <FaFilter size={11} />
-                    {showStudentFilters ? "Hide Filters" : "Filters"}
-                    {!showStudentFilters && isStudentFilterActive ? (
-                      <span
-                        style={{
-                          width: 7,
-                          height: 7,
-                          borderRadius: 999,
-                          background: showStudentFilters ? "#ffffff" : "#007AFB",
-                          boxShadow: "0 0 0 2px rgba(37,99,235,0.18)",
-                        }}
-                      />
-                    ) : null}
-                  </button>
-                ) : null}
-                <span style={{ color: "#007AFB" }}>{listCount}</span>
-              </div>
-            </div>
-            <input
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-              placeholder={`Search ${selectedTab}s...`}
-              style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid #d1d5db", background: "#fff", outline: "none", fontSize: 13 }}
-            />
-
-            {selectedTab === "student" && showStudentFilters ? (
-              <div
-                style={{
-                  marginTop: 10,
-                  padding: "10px",
-                  border: "1px solid #dbeafe",
-                  borderRadius: 12,
-                  background: "#ffffff",
-                  boxShadow: "0 5px 12px rgba(15,23,42,0.06)",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <span style={{ fontSize: 11, fontWeight: 800, color: "#007AFB" }}>Filter Students</span>
-                  <button
-                    onClick={() => {
-                      setSelectedStudentGrade("All");
-                      setSelectedStudentSection("All");
-                    }}
-                    style={{
-                      border: "1px solid #bfdbfe",
-                      background: "#ffffff",
-                      color: "#007AFB",
-                      fontSize: 10,
-                      fontWeight: 800,
-                      cursor: "pointer",
-                      padding: "3px 8px",
-                      borderRadius: 999,
-                    }}
-                  >
-                    Reset
-                  </button>
-                </div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>
-                  <select
-                    value={selectedStudentGrade}
-                    onChange={(e) => {
-                      setSelectedStudentGrade(e.target.value);
-                      setSelectedStudentSection("All");
-                    }}
-                    style={{
-                      width: "100%",
-                      padding: "8px 10px",
-                      borderRadius: 10,
-                      border: "1px solid #cbd5e1",
-                      background: "#ffffff",
-                      fontSize: 12,
-                      color: "#0f172a",
-                      fontWeight: 500,
-                      outline: "none",
-                    }}
-                  >
-                    <option value="All">All Grades</option>
-                    {availableStudentGrades.map((grade) => (
-                      <option key={grade} value={grade}>{`Grade ${grade}`}</option>
-                    ))}
-                  </select>
-
-                  <select
-                    value={selectedStudentSection}
-                    onChange={(e) => setSelectedStudentSection(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: "8px 10px",
-                      borderRadius: 10,
-                      border: "1px solid #cbd5e1",
-                      background: "#ffffff",
-                      fontSize: 12,
-                      color: "#0f172a",
-                      fontWeight: 500,
-                      outline: "none",
-                    }}
-                  >
-                    <option value="All">All Sections</option>
-                    {availableStudentSections.map((section) => (
-                      <option key={section} value={section}>{`Section ${section}`}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            ) : null}
-
-            {selectedTab === "student" && !showStudentFilters && isStudentFilterActive ? (
-              <div
-                style={{
-                  marginTop: 8,
-                  padding: "7px 8px",
-                  borderRadius: 10,
-                  border: "1px solid #bfdbfe",
-                  background: "#eff6ff",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 8,
-                }}
-              >
-                <span style={{ fontSize: 10, color: "#1e3a8a", fontWeight: 700 }}>
-                  Active filter: {selectedStudentGrade !== "All" ? `Grade ${selectedStudentGrade}` : "All Grades"}
-                  {" · "}
-                  {selectedStudentSection !== "All" ? `Section ${selectedStudentSection}` : "All Sections"}
-                </span>
-                <button
-                  onClick={() => {
-                    setSelectedStudentGrade("All");
-                    setSelectedStudentSection("All");
-                  }}
-                  style={{
-                    border: "none",
-                    background: "transparent",
-                    color: "#007AFB",
-                    fontSize: 10,
-                    fontWeight: 800,
-                    cursor: "pointer",
-                    padding: 0,
-                  }}
-                >
-                  Reset
-                </button>
-              </div>
-            ) : null}
-
-            <div style={{ marginTop: 8, fontSize: 11, color: "#64748b" }}>
-              {students.length} Students · {parents.length} Parents · {admins.length} Management
-            </div>
-          </div>
-
-          <div
-            ref={contactScrollRef}
-            onScroll={handleContactListScroll}
-            style={{ marginTop: 4, overflowY: "auto", flex: 1, paddingRight: 2 }}
-          >
-            {loadingContacts ? (
-              <div style={{ padding: "12px 8px", color: "#64748b", fontSize: 13 }}>Loading permitted contacts...</div>
-            ) : list.length === 0 ? (
-              <div style={{ padding: "12px 8px", color: "#64748b", fontSize: 13 }}>
-                {searchText.trim() ? "No matching contacts." : `No permitted ${selectedTab} contacts.`}
-              </div>
-            ) : null}
-
-            {list.map((u) => {
-              const isActive = selectedChatUser?.userId === u.userId;
-              const unread = unreadCounts[u.userId] || 0;
-
-              return (
-                <div
-                  key={u.userId}
-                  onClick={() => {
-                    setSelectedChatUser(u);
-                    setCurrentChatKey(null);
-                    setUnreadCounts((previousCounts) => ({
-                      ...previousCounts,
-                      [u.userId]: 0,
-                    }));
-                    if (isMobile) setSidebarOpen(false);
-                  }}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 10,
-                    padding: isMobile ? 16 : 11,
-                    borderRadius: 14,
-                    cursor: "pointer",
-                    marginBottom: 9,
-                    background: "#ffffff",
-                    border: isActive ? "1px solid #93c5fd" : "1px solid #e5e7eb",
-                    boxShadow: isActive ? "inset 3px 0 0 #007AFB, 0 8px 18px rgba(0,122,251,0.12)" : "0 2px 8px rgba(15,23,42,0.05)",
-                    transition: "all 160ms ease",
-                    fontSize: isMobile ? 17 : 14,
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                    <div style={{ position: "relative", flexShrink: 0 }}>
-                      <img
-                        src={u.profileImage}
-                        alt={u.name}
-                        onError={(e) => {
-                          const fallback = createPlaceholderAvatar(u?.name || "User");
-                          if (e.currentTarget.src === fallback) return;
-                          e.currentTarget.src = fallback;
-                        }}
-                        style={{ width: isMobile ? 38 : 42, height: isMobile ? 38 : 42, borderRadius: "50%", objectFit: "cover", border: "2px solid #ffffff", boxShadow: "0 4px 10px rgba(15,23,42,0.12)" }}
-                      />
-                      <span
-                        style={{
-                          position: "absolute",
-                          right: -2,
-                          bottom: -2,
-                          width: 12,
-                          height: 12,
-                          borderRadius: 12,
-                          border: "2px solid #fff",
-                          background: isUserOnline(u.userId) ? "#22c55e" : "#cbd5e1",
-                        }}
-                      />
-                    </div>
-
-                    <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                      <span style={{ fontWeight: 700, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{u.name}</span>
-                      <span style={{ fontSize: 11, color: "#64748b", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {isUserOnline(u.userId)
-                          ? "Online now"
-                          : getLastSeenText(u.userId) || (selectedTab === "admin" ? u.title || "Academic admin" : tabTitle)}
-                      </span>
-                    </div>
-                  </div>
-
-                  {unread > 0 ? (
-                    <div
-                      style={{
-                        minWidth: 26,
-                        height: 26,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        background: "#ef4444",
-                        color: "#fff",
-                        borderRadius: 14,
-                        padding: "0 6px",
-                        fontSize: 11,
-                        fontWeight: 800,
-                        boxShadow: "0 4px 10px rgba(239,68,68,0.25)",
-                      }}
-                    >
-                      {unread > 99 ? "99+" : unread}
-                    </div>
-                  ) : (
-                    <div style={{ width: 26 }} />
-                  )}
-                </div>
-              );
-            })}
-          </div>
+            &times;
+          </button>
         </div>
-
-        {/* small toggle rail visible on desktop when sidebar is collapsed */}
-        {!isMobile && (
-          <div style={{ width: 44, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 10 }}>
-            <button
-              onClick={() => setSidebarOpen((s) => !s)}
-              style={{
-                width: 40,
-                height: 74,
-                border: "1px solid #007AFB)",
-                background: "linear-gradient(180deg, rgba(255,255,255,0.98) 90%, #e5eaf0 100%)",
-                borderRadius: 18,
-                padding: 0,
-                boxShadow: "0 14px 24px rgba(15, 23, 42, 0.1)",
-                cursor: "pointer",
-                color: "#007AFB",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-                transition: "transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease",
-              }}
-              title={sidebarOpen ? "Collapse contacts" : "Expand contacts"}
-              aria-label="Toggle sidebar"
-            >
-              <span
-                aria-hidden="true"
-                style={{
-                  width: 4,
-                  height: 24,
-                  borderRadius: 999,
-                  background: "linear-gradient(180deg, #bfdbfe 0%, #60a5fa 100%)",
-                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.75)",
-                }}
-              />
-              <span
-                aria-hidden="true"
-                style={{
-                  fontSize: 18,
-                  lineHeight: 1,
-                  fontWeight: 800,
-                  letterSpacing: "-0.08em",
-                  transform: sidebarOpen ? "translateX(-1px)" : "translateX(1px)",
-                }}
-              >
-                {sidebarOpen ? "‹" : "›"}
-              </span>
-            </button>
-          </div>
-        )}
-      </div>
+      )}
+      {/* ===== SIDEBAR / USER LIST ===== */}
+      <ContactList
+        navigate={navigate}
+        isMobile={false}
+        selectedTab={selectedTab}
+        selectedChatUser={selectedChatUser}
+        sidebarOpen={sidebarOpen}
+        setSelectedTab={setSelectedTab}
+        setSelectedChatUser={setSelectedChatUser}
+        setCurrentChatKey={setCurrentChatKey}
+        setSelectedStudentGrade={setSelectedStudentGrade}
+        setSelectedStudentSection={setSelectedStudentSection}
+        setShowStudentFilters={setShowStudentFilters}
+        showSearchFilterCard={showSearchFilterCard}
+        showStudentFilters={showStudentFilters}
+        isStudentFilterActive={isStudentFilterActive}
+        tabTitle={tabTitle}
+        listCount={listCount}
+        searchText={searchText}
+        setSearchText={setSearchText}
+        availableStudentGrades={availableStudentGrades}
+        availableStudentSections={availableStudentSections}
+        students={students}
+        parents={parents}
+        admins={admins}
+        loadingContacts={loadingContacts}
+        list={list}
+        unreadCounts={unreadCounts}
+        createPlaceholderAvatar={createPlaceholderAvatar}
+        isUserOnline={isUserOnline}
+        getLastSeenText={getLastSeenText}
+        setUnreadCounts={setUnreadCounts}
+        setSidebarOpen={setSidebarOpen}
+        handleContactListScroll={handleContactListScroll}
+        contactScrollRef={contactScrollRef}
+      />
 
       {/* ===== CHAT ===== */}
       <div
-        style={{
-          flex: 1,
-          padding: isMobile ? 10 : 14,
-          display: "flex",
-          flexDirection: "column",
-          background: "#ffffff",
-          border: "1px solid #e2e8f0",
-          borderRadius: isMobile ? 0 : 18,
-          boxShadow: "0 8px 24px rgba(15, 23, 42, 0.06)",
-        }}
+        className={styles.chatPanel}
+        aria-label="Chat Panel"
       >
         {selectedChatUser ? (
           <>
             {/* ===== CHAT HEADER ===== */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-                padding: "12px 14px",
-                borderBottom: "1px solid #eef2f7",
-                boxShadow: "none",
-                background: "#ffffff",
-                borderRadius: 12,
-                marginBottom: 10,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-                {isMobile && (
-                  <button
-                    onClick={() => setSelectedChatUser(null)}
-                    style={{ border: "none", background: "none", padding: 4, cursor: "pointer", color: "#1d4ed8" }}
-                    aria-label="Back to user list"
-                  >
-                    <FaArrowLeft size={20} />
-                  </button>
-                )}
-
+            <div className={styles.chatHeader}>
+              <div className={styles.chatHeaderUserInfo} aria-label="Chat Header User Info">
                 <img
                   src={selectedChatUser.profileImage}
                   alt={selectedChatUser.name}
+                  aria-label="User profile image"
                   onError={(e) => {
                     const fallback = createPlaceholderAvatar(selectedChatUser?.name || "User");
                     if (e.currentTarget.src === fallback) return;
                     e.currentTarget.src = fallback;
                   }}
-                  style={{ width: isMobile ? 42 : 50, height: isMobile ? 42 : 50, borderRadius: "50%", objectFit: "cover", border: "2px solid #ffffff", boxShadow: "0 6px 12px rgba(15,23,42,0.12)" }}
+                  className={styles.chatHeaderAvatar}
                 />
-
-                <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                  <span style={{ fontWeight: 800, fontSize: 16, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{selectedChatUser.name}</span>
+                <div className={styles.chatHeaderNameCol} aria-label="User name and status">
+                  <span className={styles.chatHeaderName}>{selectedChatUser.name}</span>
                   <span style={{ fontSize: 12, color: isUserOnline(selectedChatUser.userId) ? "#16A34A" : "#64748b" }}>
                     {isUserOnline(selectedChatUser.userId)
                       ? "Online"
@@ -2446,12 +1073,11 @@ export default function TeacherAllChat() {
                   </span>
                 </div>
               </div>
-
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: "#007AFB", background: "#FFFFFF", border: "1px solid #007AFB", padding: "5px 10px", borderRadius: 999 }}>
+              <div className={styles.chatHeaderStats} aria-label="Chat header stats">
+                <span className={styles.chatHeaderTabBadge}>
                   {tabTitle}
                 </span>
-                <span style={{ fontSize: 11, fontWeight: 700, color: "#334155", background: "#f8fafc", border: "1px solid #e2e8f0", padding: "5px 10px", borderRadius: 999 }}>
+                <span className={styles.chatHeaderCountBadge}>
                   {messages.length} messages
                 </span>
               </div>
@@ -2482,6 +1108,7 @@ export default function TeacherAllChat() {
                   <button
                     onClick={loadOlderMessages}
                     disabled={chatLoadingOlder}
+                    aria-label="Load older messages"
                     style={{
                       borderRadius: 999,
                       border: "1px solid #cbd5e1",
@@ -2521,12 +1148,7 @@ export default function TeacherAllChat() {
                 return (
                   <div
                     key={m.id}
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: isTeacher ? "flex-end" : "flex-start",
-                      marginBottom: 8,
-                    }}
+                    className={`${styles.messageRow} ${isTeacher ? styles.messageRowSent : styles.messageRowReceived}`}
                   >
                     <div
                       onClick={() => handleTextBubbleClick(m.id)}
@@ -2568,21 +1190,10 @@ export default function TeacherAllChat() {
                             }
                           : undefined
                       }
+                      className={`${styles.messageBubble} ${isTeacher ? styles.messageBubbleSent : styles.messageBubbleReceived}`}
                       style={{
-                        maxWidth: isMobile ? "88%" : "76%",
-                        background: isTeacher ? "#007AFB" : "#f6f7fb",
-                        color: isTeacher ? "#fff" : "#111827",
+                        maxWidth: "76%",
                         padding: isImageMessage ? 6 : "9px 13px",
-                        borderRadius: 14,
-                        borderTopRightRadius: isTeacher ? 6 : 14,
-                        borderTopLeftRadius: isTeacher ? 14 : 6,
-                        boxShadow: "0 2px 8px rgba(15, 23, 42, 0.08)",
-                        border: isTeacher ? "none" : "1px solid #e5e7eb",
-                        wordBreak: "break-word",
-                        cursor: "pointer",
-                        position: "relative",
-                        overflow: "visible",
-                        marginRight: isTeacher ? -12 : 0,
                       }}
                     >
                       {!isTeacher && !prevSameSender ? (
@@ -2648,7 +1259,7 @@ export default function TeacherAllChat() {
                         </>
                       ) : isImageMessage ? (
                         <div
-                          style={{ width: isMobile ? 214 : 240, position: "relative" }}
+                          style={{ width: 240, position: "relative" }}
                           onClick={(event) => {
                             event.stopPropagation();
                             handleImageClick(m.imageUrl);
@@ -2734,7 +1345,6 @@ export default function TeacherAllChat() {
                       )}
                     </div>
 
-                    {isEditing ? null : null}
                   </div>
                 );
               })}
@@ -2742,7 +1352,7 @@ export default function TeacherAllChat() {
             </div>
 
             {/* ===== INPUT ===== */}
-            <div style={{ display: "flex", gap: 8, marginTop: 10, padding: 8, borderRadius: 14, background: "#ffffff", border: "1px solid #e2e8f0", boxShadow: "0 6px 14px rgba(15,23,42,0.06)" }}>
+            <div className={styles.inputBar}>
               <input
                 ref={imageInputRef}
                 type="file"
@@ -2752,16 +1362,8 @@ export default function TeacherAllChat() {
               />
               <button
                 onClick={() => imageInputRef.current?.click()}
+                className={styles.attachButton}
                 style={{
-                  width: isMobile ? 42 : 46,
-                  height: isMobile ? 42 : 46,
-                  borderRadius: "50%",
-                  background: "#eff6ff",
-                  border: "1px solid #dbeafe",
-                  color: "#007AFB",
-                  display: "flex",
-                  justifyContent: "center",
-                  alignItems: "center",
                   cursor: imageSending ? "not-allowed" : "pointer",
                   opacity: imageSending ? 0.65 : 1,
                 }}
@@ -2773,63 +1375,34 @@ export default function TeacherAllChat() {
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-                placeholder={Object.values(editingMessages).some(Boolean) ? "Edit your message..." : "Type a message..."}
-                style={{ flex: 1, padding: isMobile ? 10 : 12, borderRadius: 999, border: "1px solid #d1d5db", outline: "none", background: "#ffffff", boxShadow: "inset 0 1px 2px rgba(15,23,42,0.04)" }}
-              />
-              <button
-                onClick={sendMessage}
-                style={{
-                  width: isMobile ? 42 : 46,
-                  height: isMobile ? 42 : 46,
-                  borderRadius: "50%",
-                  background: "#007AFB",
-                  border: "none",
-                  color: "#fff",
-                  display: "flex",
-                  justifyContent: "center",
-                  alignItems: "center",
-                  boxShadow: "0 8px 18px rgba(0, 122, 251, 0.25)",
-                  cursor: "pointer",
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" || event.shiftKey) return;
+                  event.preventDefault();
+                  void sendMessage();
                 }}
-                aria-label="Send message"
-                disabled={imageSending}
-              >
-                <FaPaperPlane />
-              </button>
+                placeholder={Object.values(editingMessages).some(Boolean) ? "Edit your message..." : "Type a message..."}
+                className={styles.messageInput}
+              />
+              <div className={styles.sendButtonWrapper}>
+                <button
+                  onClick={sendMessage}
+                  className={styles.sendButton}
+                  aria-label="Send message"
+                  disabled={imageSending}
+                >
+                  <FaPaperPlane />
+                </button>
+              </div>
             </div>
 
             {previewImageUrl ? (
               <div
                 onClick={() => setPreviewImageUrl("")}
-                style={{
-                  position: "fixed",
-                  inset: 0,
-                  background: "rgba(2,6,23,0.85)",
-                  zIndex: 1200,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: 20,
-                }}
+                className={`${styles.overlayBase} ${styles.previewOverlay}`}
               >
                 <button
                   onClick={() => setPreviewImageUrl("")}
-                  style={{
-                    position: "absolute",
-                    top: 18,
-                    right: 18,
-                    width: 36,
-                    height: 36,
-                    borderRadius: 999,
-                    border: "1px solid rgba(255,255,255,0.35)",
-                    background: "rgba(15,23,42,0.5)",
-                    color: "#fff",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    cursor: "pointer",
-                  }}
+                  className={styles.previewCloseButton}
                   aria-label="Close image"
                 >
                   <FaTimes />
@@ -2838,7 +1411,7 @@ export default function TeacherAllChat() {
                   src={previewImageUrl}
                   alt="Preview"
                   onClick={(event) => event.stopPropagation()}
-                  style={{ maxWidth: "92vw", maxHeight: "90vh", objectFit: "contain", borderRadius: 14 }}
+                  className={styles.previewImage}
                 />
               </div>
             ) : null}
@@ -2846,44 +1419,18 @@ export default function TeacherAllChat() {
             {imageMenu.open ? (
               <div
                 onClick={() => setImageMenu({ open: false, message: null })}
-                style={{
-                  position: "fixed",
-                  inset: 0,
-                  background: "rgba(2,6,23,0.45)",
-                  zIndex: 1250,
-                  display: "flex",
-                  alignItems: "flex-end",
-                  justifyContent: "center",
-                  padding: 18,
-                }}
+                className={`${styles.overlayBase} ${styles.sheetOverlay} ${styles.imageMenuOverlay}`}
               >
                 <div
                   onClick={(event) => event.stopPropagation()}
-                  style={{
-                    width: "min(420px, 96vw)",
-                    background: "#fff",
-                    borderRadius: 16,
-                    border: "1px solid #e2e8f0",
-                    boxShadow: "0 20px 45px rgba(2,6,23,0.3)",
-                    overflow: "hidden",
-                  }}
+                  className={styles.overlayPanel}
                 >
                   <button
                     onClick={async () => {
                       await handleDownloadImage(imageMenu.message);
                       setImageMenu({ open: false, message: null });
                     }}
-                    style={{
-                      width: "100%",
-                      border: "none",
-                      background: "#fff",
-                      borderBottom: "1px solid #e2e8f0",
-                      padding: "14px 16px",
-                      textAlign: "left",
-                      fontWeight: 700,
-                      color: "#0f172a",
-                      cursor: "pointer",
-                    }}
+                    className={`${styles.overlayActionButton} ${styles.overlayActionDivider} ${styles.overlayActionPrimary}`}
                   >
                     Download image
                   </button>
@@ -2895,33 +1442,14 @@ export default function TeacherAllChat() {
                         }
                         setImageMenu({ open: false, message: null });
                       }}
-                      style={{
-                        width: "100%",
-                        border: "none",
-                        background: "#fff",
-                        borderBottom: "1px solid #e2e8f0",
-                        padding: "14px 16px",
-                        textAlign: "left",
-                        fontWeight: 700,
-                        color: "#b91c1c",
-                        cursor: "pointer",
-                      }}
+                      className={`${styles.overlayActionButton} ${styles.overlayActionDivider} ${styles.overlayActionDanger}`}
                     >
                       Delete image
                     </button>
                   ) : null}
                   <button
                     onClick={() => setImageMenu({ open: false, message: null })}
-                    style={{
-                      width: "100%",
-                      border: "none",
-                      background: "#fff",
-                      padding: "14px 16px",
-                      textAlign: "left",
-                      fontWeight: 700,
-                      color: "#475569",
-                      cursor: "pointer",
-                    }}
+                    className={`${styles.overlayActionButton} ${styles.overlayActionMuted}`}
                   >
                     Cancel
                   </button>
@@ -2932,27 +1460,11 @@ export default function TeacherAllChat() {
             {textMenu.open ? (
               <div
                 onClick={() => setTextMenu({ open: false, message: null })}
-                style={{
-                  position: "fixed",
-                  inset: 0,
-                  background: "rgba(2,6,23,0.45)",
-                  zIndex: 1251,
-                  display: "flex",
-                  alignItems: "flex-end",
-                  justifyContent: "center",
-                  padding: 18,
-                }}
+                className={`${styles.overlayBase} ${styles.sheetOverlay} ${styles.textMenuOverlay}`}
               >
                 <div
                   onClick={(event) => event.stopPropagation()}
-                  style={{
-                    width: "min(420px, 96vw)",
-                    background: "#fff",
-                    borderRadius: 16,
-                    border: "1px solid #e2e8f0",
-                    boxShadow: "0 20px 45px rgba(2,6,23,0.3)",
-                    overflow: "hidden",
-                  }}
+                  className={styles.overlayPanel}
                 >
                   <button
                     onClick={() => {
@@ -2961,17 +1473,7 @@ export default function TeacherAllChat() {
                       }
                       setTextMenu({ open: false, message: null });
                     }}
-                    style={{
-                      width: "100%",
-                      border: "none",
-                      background: "#fff",
-                      borderBottom: "1px solid #e2e8f0",
-                      padding: "14px 16px",
-                      textAlign: "left",
-                      fontWeight: 700,
-                      color: "#0f172a",
-                      cursor: "pointer",
-                    }}
+                    className={`${styles.overlayActionButton} ${styles.overlayActionDivider} ${styles.overlayActionPrimary}`}
                   >
                     Edit message
                   </button>
@@ -2982,32 +1484,13 @@ export default function TeacherAllChat() {
                       }
                       setTextMenu({ open: false, message: null });
                     }}
-                    style={{
-                      width: "100%",
-                      border: "none",
-                      background: "#fff",
-                      borderBottom: "1px solid #e2e8f0",
-                      padding: "14px 16px",
-                      textAlign: "left",
-                      fontWeight: 700,
-                      color: "#b91c1c",
-                      cursor: "pointer",
-                    }}
+                    className={`${styles.overlayActionButton} ${styles.overlayActionDivider} ${styles.overlayActionDanger}`}
                   >
                     Delete message
                   </button>
                   <button
                     onClick={() => setTextMenu({ open: false, message: null })}
-                    style={{
-                      width: "100%",
-                      border: "none",
-                      background: "#fff",
-                      padding: "14px 16px",
-                      textAlign: "left",
-                      fontWeight: 700,
-                      color: "#475569",
-                      cursor: "pointer",
-                    }}
+                    className={`${styles.overlayActionButton} ${styles.overlayActionMuted}`}
                   >
                     Cancel
                   </button>
@@ -3016,10 +1499,10 @@ export default function TeacherAllChat() {
             ) : null}
           </>
         ) : (
-          <div style={{ display: "grid", placeItems: "center", flex: 1 }}>
-            <div style={{ textAlign: "center", maxWidth: 420, padding: 26, borderRadius: 18, border: "1px solid #e2e8f0", background: "#ffffff", boxShadow: "0 8px 22px rgba(15,23,42,0.06)" }}>
-              <h3 style={{ margin: 0, color: "#0f172a", fontSize: 22 }}>Select a contact to start chatting</h3>
-              <div style={{ marginTop: 8, color: "#475569", fontSize: 14, lineHeight: 1.5 }}>
+          <div className={styles.emptyStateContainer}>
+            <div className={styles.emptyStateCard}>
+              <h3 className={styles.emptyStateTitle}>Select a contact to start chatting</h3>
+              <div className={styles.emptyStateDescription}>
                 Choose from your assigned students, their parents, or academic admins.
               </div>
             </div>

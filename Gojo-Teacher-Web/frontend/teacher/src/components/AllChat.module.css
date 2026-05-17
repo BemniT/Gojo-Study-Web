@@ -1,0 +1,138 @@
+.errorBanner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  background: #f87171;
+  color: #fff;
+  padding: 10px 0;
+  text-align: center;
+  font-weight: 700;
+}
+.errorBannerDismiss {
+  margin-left: 16px;
+  background: none;
+  border: none;
+  color: #fff;
+  font-weight: 900;
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.chatHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #eef2f7;
+  background: #ffffff;
+  border-radius: 12px;
+  margin-bottom: 10px;
+}
+.chatHeaderUserInfo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.chatHeaderAvatar {
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid #ffffff;
+  box-shadow: 0 6px 12px rgba(15, 23, 42, 0.12);
+}
+.chatHeaderNameCol {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.chatHeaderName {
+  font-weight: 800;
+  font-size: 16px;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chatHeaderStats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.chatHeaderTabBadge {
+  font-size: 11px;
+  font-weight: 700;
+  color: #007AFB;
+  background: #FFFFFF;
+  border: 1px solid #007AFB;
+  padding: 5px 10px;
+  border-radius: 999px;
+}
+.chatHeaderCountBadge {
+  font-size: 11px;
+  font-weight: 700;
+  color: #334155;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  padding: 5px 10px;
+  border-radius: 999px;
+}
+
+.chatMessagesContainer {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  border-radius: 14px;
+  border: 1px solid #e2e8f0;
+}
+.chatLoadingText {
+  align-self: center;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.loadOlderWrap {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+.loadOlderBtn {
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #334155;
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.loadOlderBtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.dateSeparator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 12px;
+}
+.dateSeparatorLine {
+  flex: 1;
+  height: 1px;
+  background: #dbe7ff;
+}
+.dateSeparatorLabel {
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 700;
+}

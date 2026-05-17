@@ -1,5 +1,21 @@
+import axios from "axios";
+
 export const DEFAULT_PROFILE_IMAGE = "/default-profile.png";
 const CHAT_SUMMARY_NODE = "Chat_Summaries";
+
+export const updateChatParticipants = async (buildRtdbUrl, chatKey, participantIds = []) => {
+  const normalizedParticipantIds = [
+    ...new Set(participantIds.map((id) => String(id || "").trim()).filter(Boolean)),
+  ];
+  if (typeof buildRtdbUrl !== "function" || !chatKey || !normalizedParticipantIds.length) return;
+
+  const participantPatch = normalizedParticipantIds.reduce((result, participantId) => {
+    result[participantId] = true;
+    return result;
+  }, {});
+
+  await axios.patch(buildRtdbUrl(`Chats/${chatKey}/participants`), participantPatch);
+};
 
 export const uniqueNonEmptyValues = (values) => {
   const seen = new Set();
