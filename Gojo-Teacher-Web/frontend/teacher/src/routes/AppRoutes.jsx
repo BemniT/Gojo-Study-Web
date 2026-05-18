@@ -2,6 +2,7 @@ import React, { Suspense, lazy } from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 
 import Login from "../components/Login";
+import ErrorBoundary from "../components/ErrorBoundary";
 
 const Register = lazy(() => import("../components/Register"));
 const Dashboard = lazy(() => import("../components/Dashboard"));
@@ -51,7 +52,14 @@ export default function AppRoutes() {
 
           {/* Teacher App (persistent topbar layout) */}
           <Route element={<TeacherAppLayout />}>
-            <Route path="/dashboard" element={<Dashboard />} />
+            <Route
+              path="/dashboard"
+              element={(
+                <ErrorBoundary>
+                  <Dashboard />
+                </ErrorBoundary>
+              )}
+            />
             <Route path="/students" element={<Students />} />
             <Route path="/admins" element={<AdminPage />} />
             <Route path="/marks" element={<Marks />} />

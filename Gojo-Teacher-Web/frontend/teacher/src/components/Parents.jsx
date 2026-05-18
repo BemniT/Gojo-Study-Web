@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   FaHome,
   FaChalkboardTeacher,
@@ -12,11 +12,15 @@ import {
   FaCalendarAlt,
   FaBookOpen,
   FaPaperPlane,
+  FaChevronLeft,
+  FaChevronRight,
 } from "react-icons/fa";
+import { FixedSizeList as List } from "react-window";
 import Sidebar from "./Sidebar";
 import axios from "axios";
 import { Link, useNavigate } from "react-router-dom";
 import { getTeacherCourseContext } from "../api/teacherApi";
+import { usePaginatedProxy } from "../hooks/usePaginatedProxy";
 import { resolveProfileImage } from "../utils/profileImage";
 import {
   buildChatMessageQuery,
@@ -161,6 +165,14 @@ const isActiveRecord = (record = {}) => {
 };
 
 const DEFAULT_PROFILE_IMAGE = "/default-profile.png";
+const EMPTY_TEACHER_COURSE_CONTEXT = {
+  success: false,
+  teacherKey: "",
+  teacherRecord: null,
+  courses: [],
+  courseIds: [],
+  assignmentsByCourseId: {},
+};
 
 const getInitials = (name) => {
   const words = String(name || "")
@@ -301,6 +313,8 @@ const [children, setChildren] = useState([]);
     const [conversations, setConversations] = useState([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [resolvedSchoolCode, setResolvedSchoolCode] = useState("");
+  const [teacherCourseContext, setTeacherCourseContext] = useState(EMPTY_TEACHER_COURSE_CONTEXT);
+  const [teacherCourseContextReady, setTeacherCourseContextReady] = useState(false);
   const [quickChatLoading, setQuickChatLoading] = useState(false);
   const [quickChatLoadingOlder, setQuickChatLoadingOlder] = useState(false);
   const [quickChatHasOlder, setQuickChatHasOlder] = useState(false);
@@ -374,6 +388,42 @@ const [children, setChildren] = useState([]);
     }
     return getRtdbRoot();
   }, [resolvedSchoolCode]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadTeacherCourseContext = async () => {
+      if (!teacher || !RTDB_BASE) {
+        setTeacherCourseContext(EMPTY_TEACHER_COURSE_CONTEXT);
+        setTeacherCourseContextReady(false);
+        return;
+      }
+
+      setTeacherCourseContextReady(false);
+
+      try {
+        const nextCourseContext = await getTeacherCourseContext({ teacher, rtdbBase: RTDB_BASE });
+        if (cancelled) return;
+
+        setTeacherCourseContext(nextCourseContext || EMPTY_TEACHER_COURSE_CONTEXT);
+      } catch (error) {
+        if (cancelled) return;
+
+        console.error("Failed to resolve parent course context:", error);
+        setTeacherCourseContext(EMPTY_TEACHER_COURSE_CONTEXT);
+      } finally {
+        if (!cancelled) {
+          setTeacherCourseContextReady(true);
+        }
+      }
+    };
+
+    loadTeacherCourseContext();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [teacher, RTDB_BASE]);
 
   const handleLogout = async () => {
     await (window.__gojoTeacherLogout?.() ?? Promise.resolve());
@@ -462,7 +512,7 @@ const [children, setChildren] = useState([]);
       rtdbBase: RTDB_BASE,
       schoolCode: resolvedSchoolCode || activeTeacher?.schoolCode,
       teacherUserId: activeTeacherUserId,
-      contactCandidates: parents.map((parent) => ({
+      contactCandidates: allParents.map((parent) => ({
         userId: parent.userId,
         name: parent.name,
         profileImage: parent.profileImage,
@@ -482,216 +532,246 @@ const [children, setChildren] = useState([]);
     messagesEndRef.current?.scrollIntoView({ behavior, block: "end" });
   };
 
-  // fetch parents & related data
-  useEffect(() => {
-    if (!teacher || !RTDB_BASE) return;
-    let cancelled = false;
+  // Create fetchParentsData callback to be used with usePaginatedProxy
+  const fetchParentsData = useCallback(async () => {
+    if (!teacher || !RTDB_BASE || !teacherCourseContextReady) return [];
 
-    const fetchParents = async () => {
-      try {
-        setLoading(true);
+    try {
+      const schoolCode = normalizeScopedIdentifier(resolvedSchoolCode || teacher?.schoolCode);
+      const allowedGradeSections = extractAllowedGradeSectionsFromCourseContext(teacherCourseContext);
 
-        const schoolCode = normalizeScopedIdentifier(resolvedSchoolCode || teacher?.schoolCode);
-        const courseContext = await getTeacherCourseContext({ teacher, rtdbBase: RTDB_BASE });
-        const allowedGradeSections = extractAllowedGradeSectionsFromCourseContext(courseContext);
+      if (!allowedGradeSections.size) {
+        return [];
+      }
 
-        if (!allowedGradeSections.size) {
-          if (!cancelled) setParents([]);
-          return;
+      const visibleStudents = await loadStudentsByGradeSections({
+        rtdbBase: RTDB_BASE,
+        schoolCode,
+        allowedGradeSections,
+      });
+
+      if (!visibleStudents.length) {
+        return [];
+      }
+
+      const parentLinksByStudent = visibleStudents.map((studentRow) => ({
+        studentRow,
+        links: collectStudentParentLinks(studentRow),
+      }));
+
+      const parentIdentifiers = [...new Set(
+        parentLinksByStudent
+          .flatMap(({ links }) => links)
+          .flatMap((link) => [link?.parentId, link?.userId])
+          .map(normalizeScopedIdentifier)
+          .filter(Boolean)
+      )];
+
+      const parentRecordsByIdentifier = await loadParentRecordsByIds({
+        rtdbBase: RTDB_BASE,
+        schoolCode,
+        parentIds: parentIdentifiers,
+      });
+      const parentRecords = [...new Map(
+        Object.values(parentRecordsByIdentifier || {})
+          .filter(Boolean)
+          .map((parentRecord) => {
+            const key = `${normalizeScopedIdentifier(parentRecord?.parentId)}__${normalizeScopedIdentifier(parentRecord?.userId)}`;
+            return [key, parentRecord];
+          })
+      ).values()];
+
+      const parentUserIds = [...new Set(
+        [
+          ...parentLinksByStudent.flatMap(({ links }) => links.map((link) => link?.userId)),
+          ...parentRecords.map((parentRecord) => parentRecord?.userId),
+        ]
+          .map(normalizeScopedIdentifier)
+          .filter(Boolean)
+      )];
+      const parentUsersById = await loadUserRecordsByIds({
+        rtdbBase: RTDB_BASE,
+        schoolCode,
+        userIds: parentUserIds,
+      });
+
+      const findParentRecord = (link = {}) => {
+        const linkRefs = [link?.parentId, link?.userId].map(normalizeScopedIdentifier).filter(Boolean);
+        if (!linkRefs.length) {
+          return null;
         }
 
-        const visibleStudents = await loadStudentsByGradeSections({
-          rtdbBase: RTDB_BASE,
-          schoolCode,
-          allowedGradeSections,
-        });
-
-        if (!visibleStudents.length) {
-          if (!cancelled) setParents([]);
-          return;
-        }
-
-        const parentLinksByStudent = visibleStudents.map((studentRow) => ({
-          studentRow,
-          links: collectStudentParentLinks(studentRow),
-        }));
-
-        const parentIdentifiers = [...new Set(
-          parentLinksByStudent
-            .flatMap(({ links }) => links)
-            .flatMap((link) => [link?.parentId, link?.userId])
+        return parentRecords.find((parentRecord) => {
+          const parentRefs = [parentRecord?.parentId, parentRecord?.userId]
             .map(normalizeScopedIdentifier)
-            .filter(Boolean)
-        )];
+            .filter(Boolean);
+          return linkRefs.some((linkRef) => parentRefs.includes(linkRef));
+        }) || null;
+      };
 
-        const parentRecordsByIdentifier = await loadParentRecordsByIds({
-          rtdbBase: RTDB_BASE,
-          schoolCode,
-          parentIds: parentIdentifiers,
-        });
-        const parentRecords = [...new Map(
-          Object.values(parentRecordsByIdentifier || {})
-            .filter(Boolean)
-            .map((parentRecord) => {
-              const key = `${normalizeScopedIdentifier(parentRecord?.parentId)}__${normalizeScopedIdentifier(parentRecord?.userId)}`;
-              return [key, parentRecord];
-            })
+      const parentsByKey = new Map();
+
+      parentLinksByStudent.forEach(({ studentRow, links }) => {
+        const uniqueLinks = [...new Map(
+          (links || [])
+            .filter((link) => normalizeScopedIdentifier(link?.parentId || link?.userId))
+            .map((link) => [`${normalizeScopedIdentifier(link?.parentId || link?.userId)}__${String(link?.relationship || "")}`, link])
         ).values()];
 
-        const parentUserIds = [...new Set(
-          [
-            ...parentLinksByStudent.flatMap(({ links }) => links.map((link) => link?.userId)),
-            ...parentRecords.map((parentRecord) => parentRecord?.userId),
-          ]
-            .map(normalizeScopedIdentifier)
-            .filter(Boolean)
-        )];
-        const parentUsersById = await loadUserRecordsByIds({
-          rtdbBase: RTDB_BASE,
-          schoolCode,
-          userIds: parentUserIds,
-        });
+        uniqueLinks.forEach((link) => {
+          const parentRecord = findParentRecord(link);
+          const parentUser = parentUsersById[normalizeScopedIdentifier(parentRecord?.userId || link?.userId)] || null;
+          const parentUserId = normalizeScopedIdentifier(
+            parentUser?.userId || parentRecord?.userId || link?.userId
+          );
+          const parentKey = normalizeScopedIdentifier(
+            parentRecord?.parentId || link?.parentId || parentUserId
+          );
 
-        const findParentRecord = (link = {}) => {
-          const linkRefs = [link?.parentId, link?.userId].map(normalizeScopedIdentifier).filter(Boolean);
-          if (!linkRefs.length) {
-            return null;
+          if (!parentKey || !parentUserId) {
+            return;
           }
 
-          return parentRecords.find((parentRecord) => {
-            const parentRefs = [parentRecord?.parentId, parentRecord?.userId]
-              .map(normalizeScopedIdentifier)
-              .filter(Boolean);
-            return linkRefs.some((linkRef) => parentRefs.includes(linkRef));
-          }) || null;
-        };
-
-        const parentsByKey = new Map();
-
-        parentLinksByStudent.forEach(({ studentRow, links }) => {
-          const uniqueLinks = [...new Map(
-            (links || [])
-              .filter((link) => normalizeScopedIdentifier(link?.parentId || link?.userId))
-              .map((link) => [`${normalizeScopedIdentifier(link?.parentId || link?.userId)}__${String(link?.relationship || "")}`, link])
-          ).values()];
-
-          uniqueLinks.forEach((link) => {
-            const parentRecord = findParentRecord(link);
-            const parentUser = parentUsersById[normalizeScopedIdentifier(parentRecord?.userId || link?.userId)] || null;
-            const parentUserId = normalizeScopedIdentifier(
-              parentUser?.userId || parentRecord?.userId || link?.userId
-            );
-            const parentKey = normalizeScopedIdentifier(
-              parentRecord?.parentId || link?.parentId || parentUserId
-            );
-
-            if (!parentKey || !parentUserId) {
-              return;
-            }
-
-            const parentName =
-              parentUser?.name ||
-              parentRecord?.name ||
-              String(link?.name || "").trim() ||
-              "Parent";
-            const existingParent = parentsByKey.get(parentKey) || {
-              id: parentKey,
-              userId: parentUserId,
-              name: parentName,
-              email: parentUser?.email || parentRecord?.email || "N/A",
-              phone: parentUser?.phone || parentRecord?.phone || String(link?.phone || "").trim(),
-              profileImage: resolveAvatarSrc(
-                resolveProfileImage(
-                  parentUser?.profileImage,
-                  parentUser?.profile,
-                  parentUser?.avatar,
-                  parentRecord?.profileImage,
-                  parentRecord?.profile,
-                  link?.profileImage,
-                  DEFAULT_PROFILE_IMAGE
-                ),
-                parentName
+          const parentName =
+            parentUser?.name ||
+            parentRecord?.name ||
+            String(link?.name || "").trim() ||
+            "Parent";
+          const existingParent = parentsByKey.get(parentKey) || {
+            id: parentKey,
+            userId: parentUserId,
+            name: parentName,
+            email: parentUser?.email || parentRecord?.email || "N/A",
+            phone: parentUser?.phone || parentRecord?.phone || String(link?.phone || "").trim(),
+            profileImage: resolveAvatarSrc(
+              resolveProfileImage(
+                parentUser?.profileImage,
+                parentUser?.profile,
+                parentUser?.avatar,
+                parentRecord?.profileImage,
+                parentRecord?.profile,
+                link?.profileImage,
+                DEFAULT_PROFILE_IMAGE
               ),
-              children: [],
-              relationships: [],
-              age: parentRecord?.age || parentUser?.age || null,
-              city: parentRecord?.city || parentUser?.city || parentRecord?.address?.city || null,
-              citizenship: parentRecord?.citizenship || parentUser?.citizenship || parentRecord?.nationality || null,
-              status: parentRecord?.status || "Active",
-              isActive: typeof parentUser?.isActive === "boolean" ? parentUser.isActive : isActiveRecord(parentRecord || parentUser || {}),
-              createdAt: parentRecord?.createdAt || null,
-              parentId: parentRecord?.parentId || parentKey,
-              username: parentUser?.username || parentRecord?.username || parentRecord?.parentId || parentKey,
-              role: parentUser?.role || parentRecord?.role || "parent",
-              schoolCode:
-                parentRecord?.schoolCode ||
-                parentUser?.schoolCode ||
-                schoolCode ||
-                "",
-              occupation: parentRecord?.occupation || parentUser?.occupation || "",
-              nationalIdNumber: parentRecord?.nationalIdNumber || parentUser?.nationalIdNumber || "",
-              nationalIdImage: parentRecord?.nationalIdImage || parentUser?.nationalIdImage || "",
-              address: parentRecord?.address || parentUser?.address || null,
-              extra: parentRecord?.extra,
+              parentName
+            ),
+            children: [],
+            relationships: [],
+            age: parentRecord?.age || parentUser?.age || null,
+            city: parentRecord?.city || parentUser?.city || parentRecord?.address?.city || null,
+            citizenship: parentRecord?.citizenship || parentUser?.citizenship || parentRecord?.nationality || null,
+            status: parentRecord?.status || "Active",
+            isActive: typeof parentUser?.isActive === "boolean" ? parentUser.isActive : isActiveRecord(parentRecord || parentUser || {}),
+            createdAt: parentRecord?.createdAt || null,
+            parentId: parentRecord?.parentId || parentKey,
+            username: parentUser?.username || parentRecord?.username || parentRecord?.parentId || parentKey,
+            role: parentUser?.role || parentRecord?.role || "parent",
+            schoolCode:
+              parentRecord?.schoolCode ||
+              parentUser?.schoolCode ||
+              schoolCode ||
+              "",
+            occupation: parentRecord?.occupation || parentUser?.occupation || "",
+            nationalIdNumber: parentRecord?.nationalIdNumber || parentUser?.nationalIdNumber || "",
+            nationalIdImage: parentRecord?.nationalIdImage || parentUser?.nationalIdImage || "",
+            address: parentRecord?.address || parentUser?.address || null,
+            extra: parentRecord?.extra,
+          };
+
+          const studentName = studentRow?.name || "No Name";
+          const nextChild = {
+            studentId: studentRow?.studentId,
+            name: studentName,
+            grade: studentRow?.grade || "",
+            section: studentRow?.section || "",
+            profileImage: resolveAvatarSrc(studentRow?.profileImage, studentName),
+            userId: studentRow?.userId,
+            relationship: String(link?.relationship || "").trim() || "—",
+            age: studentRow?.raw?.age || studentRow?.user?.age || null,
+            city: studentRow?.raw?.city || studentRow?.user?.city || studentRow?.raw?.address?.city || null,
+            citizenship: studentRow?.raw?.citizenship || studentRow?.user?.citizenship || studentRow?.raw?.nationality || null,
+            address: studentRow?.raw?.address || studentRow?.user?.address || null,
+            status: studentRow?.raw?.status || "Active",
+          };
+
+          const existingChildIndex = existingParent.children.findIndex(
+            (childItem) => String(childItem?.studentId || "") === String(nextChild.studentId || "")
+          );
+
+          if (existingChildIndex === -1) {
+            existingParent.children.push(nextChild);
+          } else {
+            existingParent.children[existingChildIndex] = {
+              ...existingParent.children[existingChildIndex],
+              ...nextChild,
             };
+          }
 
-            const studentName = studentRow?.name || "No Name";
-            const nextChild = {
-              studentId: studentRow?.studentId,
-              name: studentName,
-              grade: studentRow?.grade || "",
-              section: studentRow?.section || "",
-              profileImage: resolveAvatarSrc(studentRow?.profileImage, studentName),
-              userId: studentRow?.userId,
-              relationship: String(link?.relationship || "").trim() || "—",
-              age: studentRow?.raw?.age || studentRow?.user?.age || null,
-              city: studentRow?.raw?.city || studentRow?.user?.city || studentRow?.raw?.address?.city || null,
-              citizenship: studentRow?.raw?.citizenship || studentRow?.user?.citizenship || studentRow?.raw?.nationality || null,
-              address: studentRow?.raw?.address || studentRow?.user?.address || null,
-              status: studentRow?.raw?.status || "Active",
-            };
+          existingParent.relationships = Array.from(new Set([
+            ...(existingParent.relationships || []),
+            nextChild.relationship,
+          ].filter(Boolean)));
 
-            const existingChildIndex = existingParent.children.findIndex(
-              (childItem) => String(childItem?.studentId || "") === String(nextChild.studentId || "")
-            );
-
-            if (existingChildIndex === -1) {
-              existingParent.children.push(nextChild);
-            } else {
-              existingParent.children[existingChildIndex] = {
-                ...existingParent.children[existingChildIndex],
-                ...nextChild,
-              };
-            }
-
-            existingParent.relationships = Array.from(new Set([
-              ...(existingParent.relationships || []),
-              nextChild.relationship,
-            ].filter(Boolean)));
-
-            parentsByKey.set(parentKey, existingParent);
-          });
+          parentsByKey.set(parentKey, existingParent);
         });
+      });
 
-        const finalParents = [...parentsByKey.values()]
-          .filter((parent) => parent?.userId)
-          .filter((parent) => parent?.isActive !== false)
-          .filter((parent) => Array.isArray(parent.children) && parent.children.length > 0)
-          .sort((leftParent, rightParent) => String(leftParent?.name || "").localeCompare(String(rightParent?.name || "")));
+      const finalParents = [...parentsByKey.values()]
+        .filter((parent) => parent?.userId)
+        .filter((parent) => parent?.isActive !== false)
+        .filter((parent) => Array.isArray(parent.children) && parent.children.length > 0)
+        .sort((leftParent, rightParent) => String(leftParent?.name || "").localeCompare(String(rightParent?.name || "")));
 
-        if (!cancelled) setParents(finalParents);
-      } catch (err) {
-        console.error("Error fetching parents:", err);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
+      return finalParents;
+    } catch (err) {
+      console.error("Error fetching parents:", err);
+      throw (err instanceof Error ? err : new Error("Failed to load parents"));
+    }
+  }, [teacher, RTDB_BASE, resolvedSchoolCode, teacherCourseContext, teacherCourseContextReady]);
 
-    fetchParents();
-    return () => {
-      cancelled = true;
-    };
-  }, [teacher, RTDB_BASE, resolvedSchoolCode]);
+  const normalizedSearch = (searchTerm || "").trim().toLowerCase();
+  const parentMatchesFilters = useCallback((parent) => {
+    if (!normalizedSearch) return true;
+
+    const childText = (parent.children || [])
+      .map((child) => `${child.name} ${child.studentId} ${child.grade} ${child.section}`)
+      .join(" ");
+    const haystack = `${parent.name || ""} ${parent.userId || ""} ${parent.email || ""} ${parent.phone || ""} ${childText}`
+      .toLowerCase();
+
+    return haystack.includes(normalizedSearch);
+  }, [normalizedSearch]);
+
+  // Use paginated proxy for parents
+  const {
+    items: paginatedParents,
+    allItems: allParents,
+    filteredItems: filteredParents,
+    isLoading: isLoadingParents,
+    isError: isErrorParents,
+    error: parentsQueryError,
+    goNext,
+    hasMore,
+    isLoadingNext,
+  } = usePaginatedProxy(
+    fetchParentsData,
+    [
+      'parents',
+      {
+        teacherUserId: teacher?.userId || null,
+        schoolCode: normalizeScopedIdentifier(resolvedSchoolCode || teacher?.schoolCode),
+        rtdbBase: RTDB_BASE || null,
+        courseIds: [...(teacherCourseContext?.courseIds || [])].sort(),
+      },
+    ],
+    // Block the query until teacher and RTDB are available
+    {
+      enabled: !!teacher?.userId && !!RTDB_BASE && teacherCourseContextReady,
+      filterFn: parentMatchesFilters,
+      resetKeys: [searchTerm],
+      infiniteScroll: true,
+    },
+  );
 
   useEffect(() => {
     if (selectedParent || !chatOpen) return;
@@ -1177,31 +1257,16 @@ const [children, setChildren] = useState([]);
     return () => document.body.classList.remove("sidebar-open");
   }, [selectedParent]);
 
-  const normalizedSearch = (searchTerm || "").trim().toLowerCase();
-  const filteredParents = useMemo(() => {
-    if (!normalizedSearch) return parents;
-    return parents.filter((p) => {
-      const childText = (p.children || []).map(c => `${c.name} ${c.studentId} ${c.grade} ${c.section}`).join(" ");
-      const hay = `${p.name || ""} ${p.userId || ""} ${p.email || ""} ${p.phone || ""} ${childText}`.toLowerCase();
-      return hay.includes(normalizedSearch);
-    });
-  }, [parents, normalizedSearch]);
+  const parentListError = isErrorParents
+    ? (parentsQueryError?.message || "Failed to load parents")
+    : "";
 
   const listShellWidth = isPortrait ? "92%" : "560px";
 
   // Render
   return (
     <div
-      className="dashboard-page"
       style={{
-        background: "var(--page-bg)",
-        minHeight: "100vh",
-        height: "100vh",
-        overflow: "hidden",
-        color: "var(--text-primary)",
-        "--surface-panel": "#ffffff",
-        "--surface-accent": "#eff6ff",
-        "--surface-muted": "#ffffff",
         "--surface-strong": "#e2e8f0",
         "--page-bg": "#ffffff",
         "--border-soft": "#e2e8f0",
@@ -1297,8 +1362,10 @@ const [children, setChildren] = useState([]);
               </div>
             </div>
 
-              {loading ? (
+              {isLoadingParents ? (
                 <p style={{ textAlign: "center", fontSize: 18, color: "#555" }}>Loading...</p>
+              ) : parentListError ? (
+                <p style={{ textAlign: "center", fontSize: 18, color: "#dc2626" }}>{parentListError}</p>
               ) : (filteredParents.length === 0) ? (
                 <p style={{ textAlign: "center", fontSize: 18, color: "#999" }}>No parents found.</p>
               ) : (
@@ -1357,63 +1424,107 @@ const [children, setChildren] = useState([]);
                       }
                     }
                   `}</style>
-                  <div className="parent-list-responsive">
-                    {filteredParents.map((p, index) => (
-                      <div
-                        key={p.id}
-                        onClick={() => setSelectedParent(p)}
-                        className="parent-list-item-responsive"
-                        style={{
-                          width: "100%",
-                          borderRadius: "14px",
-                          padding: "11px",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "12px",
-                          cursor: "pointer",
-                          background: "#ffffff",
-                          border: selectedParent?.id === p.id ? "1px solid #93c5fd" : "1px solid #e2e8f0",
-                          boxShadow: selectedParent?.id === p.id
-                            ? "0 14px 28px rgba(37, 99, 235, 0.16), inset 3px 0 0 #2563eb"
-                            : "0 4px 10px rgba(15, 23, 42, 0.06)",
-                          transition: "all 0.24s ease",
-                        }}
-                      >
-                        <div style={{
-                          width: 36,
-                          height: 36,
-                          borderRadius: '50%',
-                          background: selectedParent?.id === p.id ? '#007AFB' : '#eef2ff',
-                          color: selectedParent?.id === p.id ? '#fff' : '#334155',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          fontWeight: 800,
-                          fontSize: 12,
-                          flexShrink: 0,
-                        }}>{index + 1}</div>
+                  
+                  
+                  {/* Virtualized Parent List - Infinite Scroll */}
+                  <List
+                    height={500}
+                    itemCount={paginatedParents.length + (isLoadingNext ? 1 : 0)}
+                    itemSize={84}
+                    width="100%"
+                    onItemsRendered={({ visibleStopIndex }) => {
+                      // Load next batch when user scrolls within 3 items of the end
+                      if (visibleStopIndex >= paginatedParents.length - 3 && hasMore && !isLoadingNext) {
+                        goNext();
+                      }
+                    }}
+                  >
+                    {({ index, style }) => {
+                      // Render loading spinner at the bottom
+                      if (index === paginatedParents.length) {
+                        return (
+                          <div style={{ ...style, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#64748b' }}>
+                              <span style={{
+                                width: 16,
+                                height: 16,
+                                border: '2px solid #e2e8f0',
+                                borderTop: '2px solid #007AFB',
+                                borderRadius: '50%',
+                                animation: 'spin 0.6s linear infinite',
+                              }} />
+                              Loading...
+                            </div>
+                          </div>
+                        );
+                      }
+                      
+                      const p = paginatedParents[index];
+                      if (!p) return null;
+                      return (
+                        <div style={{ ...style, paddingBottom: 8 }}>
+                          <div
+                            onClick={() => setSelectedParent(p)}
+                            className="parent-list-item-responsive"
+                            style={{
+                              width: "100%",
+                              borderRadius: "14px",
+                              padding: "11px",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "12px",
+                              cursor: "pointer",
+                              background: "#ffffff",
+                              border: selectedParent?.id === p.id ? "1px solid #93c5fd" : "1px solid #e2e8f0",
+                              boxShadow: selectedParent?.id === p.id
+                                ? "0 14px 28px rgba(37, 99, 235, 0.16), inset 3px 0 0 #2563eb"
+                                : "0 4px 10px rgba(15, 23, 42, 0.06)",
+                              transition: "all 0.24s ease",
+                            }}
+                          >
+                            <div style={{
+                              width: 36,
+                              height: 36,
+                              borderRadius: '50%',
+                              background: selectedParent?.id === p.id ? '#007AFB' : '#eef2ff',
+                              color: selectedParent?.id === p.id ? '#fff' : '#334155',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontWeight: 800,
+                              fontSize: 12,
+                              flexShrink: 0,
+                            }}>{index + 1}</div>
 
-                        <img
-                          src={resolveAvatarSrc(p.profileImage, p.name)}
-                          alt={p.name}
-                          onError={(event) => {
-                            const fallback = createPlaceholderAvatar(p?.name || "Parent");
-                            if (event.currentTarget.src === fallback) return;
-                            event.currentTarget.src = fallback;
-                          }}
-                          style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover', border: selectedParent?.id === p.id ? '3px solid #007AFB' : '3px solid #dbeafe' }}
-                        />
-                        <div style={{ minWidth: 0 }}>
-                          <h3 style={{ margin: 0, fontSize: 14, color: "#0f172a", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</h3>
-                          <p style={{ margin: '4px 0', color: '#64748b', fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.email}</p>
-                          <p style={{ margin: 0, color: '#475569', fontSize: 10, fontWeight: 600 }}>
-                            {(p.children || []).length} {(p.children || []).length === 1 ? "Child" : "Children"}
-                          </p>
+                            <img
+                              src={resolveAvatarSrc(p.profileImage, p.name)}
+                              alt={p.name}
+                              onError={(event) => {
+                                const fallback = createPlaceholderAvatar(p?.name || "Parent");
+                                if (event.currentTarget.src === fallback) return;
+                                event.currentTarget.src = fallback;
+                              }}
+                              style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover', border: selectedParent?.id === p.id ? '3px solid #007AFB' : '3px solid #dbeafe' }}
+                            />
+                            <div style={{ minWidth: 0 }}>
+                              <h3 style={{ margin: 0, fontSize: 14, color: "#0f172a", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</h3>
+                              <p style={{ margin: '4px 0', color: '#64748b', fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.email}</p>
+                              <p style={{ margin: 0, color: '#475569', fontSize: 10, fontWeight: 600 }}>
+                                {(p.children || []).length} {(p.children || []).length === 1 ? "Child" : "Children"}
+                              </p>
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                    <div style={{ height: 8 }} />
-                  </div>
+                      );
+                    }}
+                  </List>
+                  <style>{`
+                    @keyframes spin {
+                      from { transform: rotate(0deg); }
+                      to { transform: rotate(360deg); }
+                    }
+                  `}</style>
+                  <div style={{ height: 8 }} />
                 </>
               )}
 
