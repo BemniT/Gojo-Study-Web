@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import { BACKEND_BASE } from "../config.js";
+import { BACKEND_BASE, FIREBASE_DATABASE_URL } from "../config.js";
 import ProfileAvatar from "../components/ProfileAvatar";
+import { useQuery } from '@tanstack/react-query';
 
 export default function OverviewPage() {
   const getIsNarrow = () => (typeof window !== "undefined" ? window.innerWidth <= 1100 : false);
@@ -15,98 +16,64 @@ export default function OverviewPage() {
   })();
 
   const schoolCode = stored.schoolCode || "";
-  const API_BASE = `${BACKEND_BASE}/api`;
-  const OVERVIEW_CACHE_KEY = schoolCode ? `overview-cache:${schoolCode}` : "";
-
-  const readOverviewCache = () => {
-    if (!OVERVIEW_CACHE_KEY || typeof window === "undefined") {
-      return null;
-    }
-
-    try {
-      const cached = JSON.parse(sessionStorage.getItem(OVERVIEW_CACHE_KEY) || "null");
-      if (!cached || typeof cached !== "object") {
-        return null;
-      }
-
-      const cachedAt = Number(cached.cachedAt || 0);
-      if (!cachedAt || Date.now() - cachedAt > 5 * 60 * 1000) {
-        return null;
-      }
-
-      return cached;
-    } catch (error) {
-      return null;
-    }
-  };
-
-  const cachedOverview = readOverviewCache();
+  const DB_URL = FIREBASE_DATABASE_URL;
 
   const [isNarrow, setIsNarrow] = useState(getIsNarrow());
-  const [loading, setLoading] = useState(!cachedOverview);
-  const [students, setStudents] = useState(cachedOverview?.students || []);
-  const [parentsCount, setParentsCount] = useState(cachedOverview?.parentsCount || 0);
-  const [postsCount, setPostsCount] = useState(cachedOverview?.postsCount || 0);
   const [showAllRecent, setShowAllRecent] = useState(false);
   const [hoveredTrendKey, setHoveredTrendKey] = useState("");
+
+  // Fetch overview data with React Query
+  const { data: overviewData, isLoading: loading } = useQuery({
+    queryKey: ['overview', schoolCode],
+    queryFn: async () => {
+      // Fetch students from StudentDirectory (first 1000 for overview stats)
+      const studentsUrl = `${DB_URL}/StudentDirectory.json?orderBy="$key"&limitToFirst=1000`;
+      const studentsRes = await axios.get(studentsUrl);
+      const studentsData = studentsRes.data || {};
+      
+      const studentRows = Object.entries(studentsData).map(([id, student]) => ({
+        studentId: id,
+        userId: student.userId || id,
+        name: student.name || student.username || "Unknown",
+        grade: student.grade || "-",
+        gender: student.gender || "",
+        status: student.status || "active",
+        profileImage: student.profileImage || "",
+        createdAt: student.createdAt || student.registeredAt || "",
+      }));
+
+      // Count parents from ParentDirectory  
+      const parentsUrl = `${DB_URL}/ParentDirectory.json?shallow=true`;
+      const parentsRes = await axios.get(parentsUrl);
+      const parentsData = parentsRes.data || {};
+      const parentsCount = Object.keys(parentsData).length;
+
+      // Count posts from Posts
+      const postsUrl = `${DB_URL}/Posts.json?shallow=true`;
+      const postsRes = await axios.get(postsUrl);
+      const postsData = postsRes.data || {};
+      const postsCount = Object.keys(postsData).length;
+
+      return {
+        students: studentRows,
+        parentsCount,
+        postsCount,
+      };
+    },
+    enabled: Boolean(schoolCode),
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    cacheTime: 10 * 60 * 1000, // 10 minutes
+  });
+
+  const students = overviewData?.students || [];
+  const parentsCount = overviewData?.parentsCount || 0;
+  const postsCount = overviewData?.postsCount || 0;
 
   useEffect(() => {
     const onResize = () => setIsNarrow(getIsNarrow());
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-
-  useEffect(() => {
-    let isMounted = true;
-
-    const loadOverview = async () => {
-      try {
-        if (!cachedOverview && isMounted) {
-          setLoading(true);
-        }
-
-        const res = await axios.get(`${API_BASE}/overview`, {
-          params: { schoolCode },
-          timeout: 12000,
-        });
-        const studentRows = Array.isArray(res?.data?.students) ? res.data.students : [];
-        const resolvedParentsCount = Number(res?.data?.parentsCount || 0);
-        const resolvedPostsCount = Number(res?.data?.postsCount || 0);
-
-        if (!isMounted) {
-          return;
-        }
-
-        setStudents(studentRows);
-        setParentsCount(resolvedParentsCount);
-        setPostsCount(resolvedPostsCount);
-
-        if (OVERVIEW_CACHE_KEY && typeof window !== "undefined") {
-          sessionStorage.setItem(
-            OVERVIEW_CACHE_KEY,
-            JSON.stringify({
-              students: studentRows,
-              parentsCount: resolvedParentsCount,
-              postsCount: resolvedPostsCount,
-              cachedAt: Date.now(),
-            })
-          );
-        }
-      } catch (error) {
-        console.error("Overview fetch error:", error);
-      } finally {
-        if (isMounted) {
-          setLoading(false);
-        }
-      }
-    };
-
-    loadOverview();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [API_BASE, OVERVIEW_CACHE_KEY, schoolCode]);
 
   const summary = useMemo(() => {
     const totalStudents = students.length;

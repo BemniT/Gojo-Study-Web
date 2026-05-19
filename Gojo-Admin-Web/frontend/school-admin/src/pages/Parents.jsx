@@ -495,7 +495,6 @@ function Parent() {
     queryFn: async () => {
       setLoadingParents(true);
       try {
-<<<<<<< HEAD
         // PAGINATION: Fetch first page only (50 parents)
         const paginatedUrl = `${PARENT_DIRECTORY_URL}?orderBy="$key"&limitToFirst=${PAGE_SIZE}`;
         const parentDirectoryResponse = await axios.get(paginatedUrl);
@@ -511,9 +510,6 @@ function Parent() {
         // Check if there are more parents
         setHasMoreParents(parentKeys.length >= PAGE_SIZE);
 
-=======
-        const parentDirectoryData = await readSchoolNodeApi("ParentDirectory", {});
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
         const directoryParentList = sortParentsByName(
           Object.entries(parentDirectoryData || {})
             .map(([parentKey, parentValue]) => normalizeParentDirectoryEntry(parentKey, parentValue))
@@ -631,7 +627,6 @@ function Parent() {
     setLoadingParents(isParentsQueryLoading);
   }, [isParentsQueryLoading]);
 
-<<<<<<< HEAD
   // ------------------ LOAD MORE PARENTS ------------------
   const loadMoreParents = async () => {
     if (!hasMoreParents || loadingMore || !paginationCursor) return;
@@ -672,12 +667,6 @@ function Parent() {
       setLoadingMore(false);
     }
   };
-=======
-    return () => {
-      cancelled = true;
-    };
-  }, [schoolCode]);
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
 
   // Mark post notification & navigate
   const handleNotificationClick = async (notification) => {

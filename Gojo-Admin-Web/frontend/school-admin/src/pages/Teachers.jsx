@@ -149,7 +149,6 @@ function TeachersPage() {
   const [pendingToggle, setPendingToggle] = useState(null); // { userId, curBool, newActive }
   const [teachersInitialized, setTeachersInitialized] = useState(Boolean(bootstrapCache));
 
-<<<<<<< HEAD
   // Pagination states
   const [paginationCursor, setPaginationCursor] = useState(null);
   const [hasMoreTeachers, setHasMoreTeachers] = useState(true);
@@ -158,7 +157,7 @@ function TeachersPage() {
   
   // React Query client for cache management
   const queryClient = useQueryClient();
-=======
+
   const shouldRunPassiveNotificationRefresh = () => {
     const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
     const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
@@ -194,7 +193,6 @@ function TeachersPage() {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
 
   // open modal to confirm toggle and collect admin credentials
   const handleToggleActiveTeacher = async () => {
@@ -805,7 +803,6 @@ useEffect(() => {
       setLoadingTeachers(true);
 
       try {
-<<<<<<< HEAD
         // PAGINATION: Fetch paginated TeacherDirectory
         const paginatedUrl = `${TEACHER_DIRECTORY_URL}?orderBy="$key"&limitToFirst=${PAGE_SIZE}`;
         const teacherDirectoryResponse = await axios.get(paginatedUrl);
@@ -820,13 +817,6 @@ useEffect(() => {
         
         // Check if there are more teachers
         setHasMoreTeachers(teacherKeys.length >= PAGE_SIZE);
-=======
-        const teacherDirectoryResponse = await axios.get(`${API_BASE}/directory/teachers`, {
-          params: { schoolCode },
-          timeout: 12000,
-        });
-        const teacherDirectoryData = teacherDirectoryResponse?.data?.teachers || {};
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
 
         const teacherSummaryList = Object.entries(teacherDirectoryData || {})
           .map(([teacherId, teacher]) => {

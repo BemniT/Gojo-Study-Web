@@ -196,14 +196,11 @@ function StudentsPage() {
   const PAGE_SIZE = 50;
   const [currentAcademicYear, setCurrentAcademicYear] = useState("");
   const [gradeOptions, setGradeOptions] = useState([]);
-<<<<<<< HEAD
   
   // React Query client for cache management
   const queryClient = useQueryClient();
-=======
   const [gradeSubjectsByGrade, setGradeSubjectsByGrade] = useState({});
   const [gradeSubjectsLoaded, setGradeSubjectsLoaded] = useState(false);
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
   const [unreadMap, setUnreadMap] = useState({});
   const [editingProfile, setEditingProfile] = useState(false);
   const [editForm, setEditForm] = useState({});
@@ -1116,12 +1113,6 @@ function StudentsPage() {
 
 
 
-<<<<<<< HEAD
-  // ------------------ FETCH STUDENTS (PAGINATED WITH REACT QUERY) ------------------
-  const { data: reactQueryStudents, isLoading: isStudentsQueryLoading, refetch: refetchStudents } = useQuery({
-    queryKey: ['students', schoolCode],
-    queryFn: async () => {
-=======
   useEffect(() => {
     let cancelled = false;
 
@@ -1152,25 +1143,14 @@ function StudentsPage() {
     };
   }, [BIG_NODE_CACHE_TTL_MS, activeSchoolCode, loadingFinance]);
 
-  // ------------------ FETCH STUDENTS ------------------
-  useEffect(() => {
-    if (loadingFinance) {
-      return;
-    }
-
-    if (!activeSchoolCode) {
-      setStudents([]);
-      setStudentsLoading(false);
-      return;
-    }
-
-    const fetchStudents = async () => {
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
+  // ------------------ FETCH STUDENTS (PAGINATED WITH REACT QUERY) ------------------
+  const { data: reactQueryStudents, isLoading: isStudentsQueryLoading, refetch: refetchStudents } = useQuery({
+    queryKey: ['students', schoolCode],
+    queryFn: async () => {
       const cached = readStudentsCache();
       if (cached && Array.isArray(cached.studentList)) {
         setGradeOptions(Array.isArray(cached.gradeOptions) ? cached.gradeOptions : []);
         setCurrentAcademicYear(String(cached.currentAcademicYear || ""));
-        setStudentsLoading(false);
         
         if (cached.studentList.length < PAGE_SIZE) {
           setHasMoreStudents(false);
@@ -1179,22 +1159,9 @@ function StudentsPage() {
       }
 
       try {
-<<<<<<< HEAD
         const [schoolInfoData, gradesData] = await Promise.all([
-          fetchCachedJson(`${DB_URL}/schoolInfo.json`, {
-            ttlMs: BIG_NODE_CACHE_TTL_MS,
-            fallbackValue: {},
-          }),
-          fetchCachedJson(`${DB_URL}/GradeManagement/grades.json`, {
-            ttlMs: BIG_NODE_CACHE_TTL_MS,
-            fallbackValue: {},
-          }),
-=======
-        const [schoolInfoData, gradesData, studentDirectoryData] = await Promise.all([
           readSchoolNodeApi("schoolInfo", {}),
           readSchoolNodeApi("GradeManagement/grades", {}),
-          readSchoolNodeApi("StudentDirectory", {}),
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
         ]);
         const activeAcademicYear = (schoolInfoData || {}).currentAcademicYear || "";
         setCurrentAcademicYear(activeAcademicYear);
@@ -1238,7 +1205,6 @@ function StudentsPage() {
           return directoryStudentList;
         }
 
-<<<<<<< HEAD
         // Fallback: If StudentDirectory is empty, fetch from Students node (paginated)
         const studentsPaginatedUrl = `${DB_URL}/Students.json?orderBy="$key"&limitToFirst=${PAGE_SIZE}`;
         const studentsResponse = await axios.get(studentsPaginatedUrl);
@@ -1251,31 +1217,18 @@ function StudentsPage() {
         }
         
         setHasMoreStudents(studentKeys2.length >= PAGE_SIZE);
-=======
-        const studentsData = await readSchoolNodeApi("Students", {});
-
-        const studentKeys = Object.keys(studentsData || {});
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
 
         const baseStudentList = studentKeys2.map((id) => normalizeStudentSummary(id, studentsData[id]));
 
         setStudentsLoading(false);
         persistStudentList(baseStudentList, managedGrades, activeAcademicYear);
 
-<<<<<<< HEAD
-        // Hydrate with user data in background
-        const usersData = readCachedJson(`${DB_URL}/Users.json`, {
-          ttlMs: BIG_NODE_CACHE_TTL_MS,
-        });
-        if (usersData && typeof usersData === "object") {
-=======
         try {
           const usersData = await readSchoolNodeApi("Users", {});
           if (!usersData || typeof usersData !== "object") {
-            return;
+            return baseStudentList;
           }
 
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
           const hydratedStudentList = baseStudentList.map((student) => {
             const user = usersData[student.userId] || {};
             return {
@@ -1291,9 +1244,10 @@ function StudentsPage() {
 
           persistStudentList(hydratedStudentList, managedGrades, activeAcademicYear);
           return hydratedStudentList;
+        } catch (hydrationErr) {
+          console.warn("Failed to hydrate student profiles:", hydrationErr);
+          return baseStudentList;
         }
-        
-        return baseStudentList;
       } catch (err) {
         console.error("Error fetching students:", err);
         return [];
@@ -1318,7 +1272,6 @@ function StudentsPage() {
     setStudentsLoading(isStudentsQueryLoading);
   }, [isStudentsQueryLoading]);
 
-<<<<<<< HEAD
   // ------------------ LOAD MORE STUDENTS ------------------
   const loadMoreStudents = async () => {
     if (!hasMoreStudents || loadingMore || !paginationCursor) return;
@@ -1368,10 +1321,6 @@ function StudentsPage() {
       setLoadingMore(false);
     }
   };
-=======
-    fetchStudents();
-  }, [activeSchoolCode, loadingFinance]);
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
 
   const previousAcademicYearKey = useMemo(() => {
     const text = String(currentAcademicYear || "").trim();
