@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+﻿import React, { useEffect, useState, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { 
   FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, 
@@ -25,183 +25,29 @@ import {
 } from "../utils/chatRtdb";
 import { fetchCachedJson, readCachedJson, writeCachedJson } from "../utils/rtdbCache";
 import { schoolNodeBase } from "../utils/schoolDbRouting";
+import useStudentsList from "../hooks/useStudentsList";
+import useStudentChat from "../hooks/useStudentChat";
+import useStudentPerformance from "../hooks/useStudentPerformance";
 
-const normalizeCourseToken = (value) =>
-  String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-
-const buildGeneratedCourseId = (gradeValue, sectionValue, subjectToken) =>
-  `gm_${normalizeCourseToken(gradeValue)}_${normalizeCourseToken(sectionValue)}_${normalizeCourseToken(subjectToken)}`;
-
-const normalizeGradeSubjectEntries = (subjectsNode) => {
-  if (Array.isArray(subjectsNode)) {
-    return subjectsNode
-      .map((subjectItem) => {
-        if (!subjectItem) return null;
-        if (typeof subjectItem === "string") {
-          return { key: normalizeCourseToken(subjectItem), name: subjectItem };
-        }
-        if (typeof subjectItem === "object") {
-          const displayName = subjectItem.name || subjectItem.subject || subjectItem.code || "";
-          const subjectKey = normalizeCourseToken(subjectItem.key || subjectItem.id || displayName);
-          if (!subjectKey || !displayName) return null;
-          return { key: subjectKey, name: displayName };
-        }
-        return null;
-      })
-      .filter(Boolean);
-  }
-
-  if (subjectsNode && typeof subjectsNode === "object") {
-    return Object.entries(subjectsNode)
-      .map(([subjectKey, subjectValue]) => {
-        if (subjectValue && typeof subjectValue === "object") {
-          const displayName = subjectValue.name || subjectValue.subject || subjectKey;
-          return {
-            key: normalizeCourseToken(subjectKey || displayName),
-            name: displayName,
-          };
-        }
-        if (typeof subjectValue === "string") {
-          return {
-            key: normalizeCourseToken(subjectKey || subjectValue),
-            name: subjectValue,
-          };
-        }
-        return {
-          key: normalizeCourseToken(subjectKey),
-          name: subjectKey,
-        };
-      })
-      .filter((entry) => entry.key && entry.name);
-  }
-
-  return [];
-};
-
-const buildGradeSubjectsByGrade = (gradesNode) => {
-  const result = {};
-  const gradeEntries = Array.isArray(gradesNode)
-    ? gradesNode
-    : Object.entries(gradesNode || {}).map(([gradeKey, gradeValue]) => ({
-        grade: gradeValue?.grade ?? gradeKey,
-        ...(gradeValue && typeof gradeValue === "object" ? gradeValue : {}),
-      }));
-
-  gradeEntries.forEach((entry, index) => {
-    if (!entry || typeof entry !== "object") return;
-
-    const grade = String(entry.grade ?? (Array.isArray(gradesNode) ? String(index + 1) : "")).trim();
-    if (!grade) return;
-
-    const subjectMap = new Map();
-    normalizeGradeSubjectEntries(entry.subjects).forEach((subjectEntry) => {
-      subjectMap.set(normalizeCourseToken(subjectEntry.key || subjectEntry.name), subjectEntry);
-    });
-
-    const sectionSubjectTeachers =
-      entry.sectionSubjectTeachers && typeof entry.sectionSubjectTeachers === "object"
-        ? entry.sectionSubjectTeachers
-        : {};
-
-    Object.values(sectionSubjectTeachers).forEach((sectionNode) => {
-      Object.entries(sectionNode || {}).forEach(([subjectKey, assignment]) => {
-        const displayName =
-          assignment && typeof assignment === "object" && (assignment.subject || assignment.name)
-            ? assignment.subject || assignment.name
-            : subjectKey;
-        const token = normalizeCourseToken(
-          assignment && typeof assignment === "object"
-            ? assignment.key || assignment.id || displayName || subjectKey
-            : displayName || subjectKey
-        );
-        if (!token) return;
-        subjectMap.set(token, {
-          key: token,
-          name: String(displayName || subjectKey || "").trim(),
-        });
-      });
-    });
-
-    result[grade] = [...subjectMap.values()].filter((entry) => entry?.key);
-  });
-
-  return result;
-};
-
-const getStudentCourseIds = ({ student = {}, gradeSubjectsByGrade = {} } = {}) => {
-  const grade = String(student?.grade || student?.basicStudentInformation?.grade || "").trim();
-  const section = String(student?.section || student?.secation || student?.basicStudentInformation?.section || "").trim().toUpperCase();
-  if (!grade || !section) return [];
-
-  return [...new Set(
-    (gradeSubjectsByGrade[grade] || [])
-      .map((subjectEntry) => buildGeneratedCourseId(grade, section, subjectEntry?.key || subjectEntry?.name))
-      .filter(Boolean)
-  )];
-};
-
-const findStudentScopedNode = (records = {}, student = {}) => {
-  const candidateKeys = new Set(uniqueNonEmptyValues([
-    student?.studentId,
-    student?.userId,
-    student?.userId ? `student_${student.userId}` : "",
-  ]));
-
-  for (const candidate of candidateKeys) {
-    if (records?.[candidate]) {
-      return records[candidate];
-    }
-  }
-
-  return Object.values(records || {}).find(
-    (record) =>
-      record &&
-      typeof record === "object" &&
-      (candidateKeys.has(String(record.userId || "").trim()) || candidateKeys.has(String(record.studentId || "").trim()))
-  ) || null;
-};
 
 
 function StudentsPage() {
   const API_BASE = `${BACKEND_BASE}/api`;
   // ------------------ STATES ------------------
-  const [students, setStudents] = useState([]); // List of all students
   const [teachers, setTeachers] = useState([]);
   const [selectedGrade, setSelectedGrade] = useState("All"); // Grade filter
   const [selectedSection, setSelectedSection] = useState("All"); // Section filter
   const [searchTerm, setSearchTerm] = useState("");
   const [sections, setSections] = useState([]); // Sections available for selected grade
   const [selectedStudent, setSelectedStudent] = useState(null); // Currently selected student
-  const [studentChatOpen, setStudentChatOpen] = useState(false); // Toggle chat popup
-  const [popupMessages, setPopupMessages] = useState([]); // Messages for chat popup
-  const messagesEndRef = useRef(null);
   const studentSelectionRequestRef = useRef(0);
-  const [popupInput, setPopupInput] = useState(""); // Input for chat message
   const [details, setDetails] = useState(null);
-  const [performance, setPerformance] = useState([]);
   const [studentTab, setStudentTab] = useState("details");
-  const [attendance, setAttendance] = useState([]);
-  const [paymentHistory, setPaymentHistory] = useState({});
-  const [marks, setMarks] = useState({});
-  const [studentsLoading, setStudentsLoading] = useState(true);
   
   // Pagination states
-  const [paginationCursor, setPaginationCursor] = useState(null);
-  const [hasMoreStudents, setHasMoreStudents] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const PAGE_SIZE = 50;
-  const [currentAcademicYear, setCurrentAcademicYear] = useState("");
-  const [gradeOptions, setGradeOptions] = useState([]);
   
   // React Query client for cache management
   const queryClient = useQueryClient();
-  const [gradeSubjectsByGrade, setGradeSubjectsByGrade] = useState({});
-  const [gradeSubjectsLoaded, setGradeSubjectsLoaded] = useState(false);
-  const [unreadMap, setUnreadMap] = useState({});
   const [editingProfile, setEditingProfile] = useState(false);
   const [editForm, setEditForm] = useState({});
   const [savingProfile, setSavingProfile] = useState(false);
@@ -353,66 +199,10 @@ function StudentsPage() {
 
     return nextValue;
   };
-  const STUDENTS_CACHE_KEY = `students_page_cache_${initialSchoolCode || "global"}`;
-  const STUDENT_DIRECTORY_URL = `${DB_URL}/StudentDirectory.json`;
 
-  const readStudentsCache = () => {
-    try {
-      const rawSession = sessionStorage.getItem(STUDENTS_CACHE_KEY);
-      const rawLocal = localStorage.getItem(STUDENTS_CACHE_KEY);
-      const parsed = JSON.parse(rawSession || rawLocal || "null");
-      if (!parsed || typeof parsed !== "object") return null;
 
-      const cachedAt = Number(parsed.cachedAt || 0);
-      if (!cachedAt || Date.now() - cachedAt > 10 * 60 * 1000) return null;
 
-      if (!rawSession && rawLocal) {
-        sessionStorage.setItem(STUDENTS_CACHE_KEY, rawLocal);
-      }
 
-      return parsed;
-    } catch {
-      return null;
-    }
-  };
-
-  const writeStudentsCache = (payload) => {
-    try {
-      const serialized = JSON.stringify({ ...(payload || {}), cachedAt: Date.now() });
-      sessionStorage.setItem(STUDENTS_CACHE_KEY, serialized);
-      localStorage.setItem(STUDENTS_CACHE_KEY, serialized);
-    } catch {
-      // ignore cache write failures
-    }
-  };
-
-  const persistStudentList = (studentList, nextGradeOptions = gradeOptions, nextCurrentAcademicYear = currentAcademicYear) => {
-    setStudents(studentList);
-    writeStudentsCache({
-      studentList,
-      gradeOptions: Array.isArray(nextGradeOptions) ? nextGradeOptions : [],
-      currentAcademicYear: nextCurrentAcademicYear || "",
-    });
-  };
-
-  const writeStudentDirectoryEntryToCache = (studentId, updater) => {
-    if (!studentId) {
-      return;
-    }
-
-    const currentDirectory = readCachedJson(STUDENT_DIRECTORY_URL, {
-      ttlMs: 15 * 60 * 1000,
-    });
-    if (!currentDirectory || typeof currentDirectory !== "object") {
-      return;
-    }
-
-    const previousEntry = currentDirectory[studentId] || {};
-    writeCachedJson(STUDENT_DIRECTORY_URL, {
-      ...currentDirectory,
-      [studentId]: typeof updater === "function" ? updater(previousEntry) : { ...previousEntry, ...(updater || {}) },
-    });
-  };
 
   const [finance, setFinance] = useState({
     financeId: _storedFinance.financeId || _storedFinance.adminId || "",
@@ -441,6 +231,72 @@ function StudentsPage() {
   const activeSchoolCode = String(finance?.schoolCode || initialSchoolCode || "").trim();
 
   const [loadingFinance, setLoadingFinance] = useState(true);
+
+  // ---------------- STUDENTS LIST (hook owns data layer) ----------------
+  const {
+    students, setStudents,
+    gradeOptions, setGradeOptions,
+    currentAcademicYear, setCurrentAcademicYear,
+    filteredStudentsBase,
+    currentYearStudents,
+    lastYearStudents,
+    previousAcademicYearKey,
+    studentsLoading,
+    paginationCursor,
+    hasMoreStudents,
+    loadingMore,
+    loadMoreStudents,
+    persistStudentList,
+    writeStudentsCache,
+    writeStudentDirectoryEntryToCache,
+  } = useStudentsList({
+    schoolCode: activeSchoolCode,
+    apiBase: API_BASE,
+    loadingFinance,
+    selectedGrade,
+    setSelectedGrade,
+    selectedSection,
+    searchTerm,
+  });
+
+  // ---------------- STUDENT CHAT (hook owns chat data layer) ----------------
+  const {
+    studentChatOpen, setStudentChatOpen,
+    popupMessages, setPopupMessages,
+    popupInput, setPopupInput,
+    newMessageText, setNewMessageText,
+    unreadMap,
+    messagesEndRef,
+    sendPopupMessage,
+    sendMessage,
+    getStudentIdentityCandidates,
+  } = useStudentChat({
+    selectedStudent,
+    students,
+    adminUserId,
+    adminId,
+    dbUrl: DB_URL,
+  });
+
+  // ---------------- STUDENT PERFORMANCE (hook owns marks/attendance/payment) ----------------
+  const {
+    studentMarks, setStudentMarks,
+    studentMarksFlattened,
+    attendance, setAttendance,
+    paymentHistory, setPaymentHistory,
+    gradeSubjectsByGrade,
+    gradeSubjectsLoaded,
+    selectedStudentCourseIds,
+  } = useStudentPerformance({
+    selectedStudent,
+    setSelectedStudent,
+    studentTab,
+    dbUrl: DB_URL,
+    apiBase: API_BASE,
+    schoolCode: activeSchoolCode,
+    loadingFinance,
+  });
+
   // LOAD FINANCE/ADMIN FROM LOCALSTORAGE (restored)
   const loadFinanceFromStorage = async () => {
     const storedAuth = getStoredAuth();
@@ -567,7 +423,6 @@ function StudentsPage() {
   const [expandedCards, setExpandedCards] = useState({});
   const [attendanceView, setAttendanceView] = useState("daily");
   const [attendanceCourseFilter, setAttendanceCourseFilter] = useState("All");
-  const [newMessageText, setNewMessageText] = useState("");
   const [showMessageDropdown, setShowMessageDropdown] = useState(false);
   const [activeSemester, setActiveSemester] = useState("semester1");
   const [activeQuarter, setActiveQuarter] = useState("quarter1");
@@ -576,292 +431,29 @@ function StudentsPage() {
     semester2: ["quarter3", "quarter4"],
   };
 
-  const isValidGradeKey = (value) => {
-    const numeric = Number(value);
-    return Number.isInteger(numeric) && numeric >= 1 && numeric <= 12;
-  };
 
-  const normalizeAcademicYear = (value) => String(value || "").trim().replace(/\//g, "_");
 // Place before return (
 
-  const DEFAULT_STUDENT_PROFILE_IMAGE = "/default-profile.png";
 
-  const isWebImageUrl = (value) => {
-    const normalized = String(value || "").trim();
-    return /^https?:\/\//i.test(normalized) || /^data:image\//i.test(normalized) || /^blob:/i.test(normalized) || normalized.startsWith("/");
-  };
 
-  const isPlaceholderProfileImage = (value) => String(value || "").trim() === DEFAULT_STUDENT_PROFILE_IMAGE;
-
-  const getSafeImage = (...candidates) => {
-    for (const candidate of candidates) {
-      if (!candidate) continue;
-      const normalized = String(candidate).trim();
-      if (isWebImageUrl(normalized)) return normalized;
-    }
-    return DEFAULT_STUDENT_PROFILE_IMAGE;
-  };
-
-  const hasDatabaseProfileImage = (value) => {
-    const normalized = String(value || "").trim();
-    return Boolean(normalized && isWebImageUrl(normalized) && !isPlaceholderProfileImage(normalized));
-  };
 
   const BIG_NODE_CACHE_TTL_MS = 5 * 60 * 1000;
   const DIRECTORY_CACHE_TTL_MS = 15 * 60 * 1000;
   const CHAT_INDEX_CACHE_TTL_MS = 60 * 1000;
 
-  const normalizeStudentSummary = (studentId, student = {}) => ({
-    studentId: String(student?.studentId || studentId || "").trim(),
-    userId: String(student?.userId || "").trim(),
-    name:
-      String(student?.name || "").trim() ||
-      String(student?.studentName || "").trim() ||
-      "No Name",
-    profileImage: getSafeImage(
-      student?.profileImage,
-      student?.basicStudentInformation?.studentPhoto,
-      student?.studentPhoto
-    ),
-    grade: String(student?.grade || student?.basicStudentInformation?.grade || "").trim(),
-    section: String(student?.section || student?.basicStudentInformation?.section || "").trim(),
-    academicYear: String(student?.academicYear || student?.basicStudentInformation?.academicYear || "").trim(),
-    email: String(student?.email || "").trim(),
-    isActive: student?.isActive !== false,
-  });
 
-  const hydrateMissingStudentProfileImages = async (studentList = []) => {
-    if (!Array.isArray(studentList) || studentList.length === 0) {
-      return [];
-    }
 
-    return mapInBatches(studentList, 8, async (studentItem) => {
-      if (hasDatabaseProfileImage(studentItem?.profileImage)) {
-        return studentItem;
-      }
 
-      let userRecord = {};
-      if (studentItem?.userId) {
-        userRecord = await readSchoolNodeApi(`Users/${studentItem.userId}`, {});
-      }
 
-      let nextProfileImage = getSafeImage(userRecord?.profileImage, studentItem?.profileImage);
-      let studentRecord = {};
 
-      if (!hasDatabaseProfileImage(nextProfileImage) && studentItem?.studentId) {
-        studentRecord = await readSchoolNodeApi(`Students/${studentItem.studentId}`, {});
 
-        nextProfileImage = getSafeImage(
-          studentRecord?.profileImage,
-          studentRecord?.basicStudentInformation?.studentPhoto,
-          studentRecord?.studentPhoto,
-          userRecord?.profileImage,
-          studentItem?.profileImage
-        );
-      }
 
-      if (!hasDatabaseProfileImage(nextProfileImage)) {
-        return studentItem;
-      }
-
-      return {
-        ...studentItem,
-        name:
-          String(userRecord?.name || userRecord?.username || studentRecord?.name || studentRecord?.basicStudentInformation?.studentFullName || "").trim() ||
-          studentItem.name,
-        email: userRecord?.email || studentRecord?.email || studentItem.email || "",
-        profileImage: nextProfileImage,
-      };
-    });
-  };
-
-  const getStudentIdentityCandidates = (studentLike = {}) => uniqueNonEmptyValues([
-    studentLike?.userId,
-    studentLike?.studentId,
-    studentLike?.id,
-  ]);
-
-  const findStudentSummary = (ownerSummaries, studentLike = {}) => {
-    const studentKeys = new Set(
-      getStudentIdentityCandidates(studentLike).map((studentKey) => String(studentKey || "").trim().toLowerCase())
-    );
-
-    let matchedSummary = null;
-    Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {}).forEach(([chatId, summaryValue]) => {
-      const summary = normalizeChatSummaryValue(summaryValue, { chatId });
-      const otherUserId = String(summary.otherUserId || "").trim().toLowerCase();
-      if (!otherUserId || !studentKeys.has(otherUserId)) {
-        return;
-      }
-
-      if (!matchedSummary || summary.lastMessageTime >= matchedSummary.lastMessageTime) {
-        matchedSummary = summary;
-      }
-    });
-
-    return matchedSummary;
-  };
-
-  const findExistingChatKey = (chatKeySet, currentUserCandidates, otherUserCandidates) => {
-    if (!(chatKeySet instanceof Set)) {
-      return "";
-    }
-
-    for (const currentUserCandidate of currentUserCandidates || []) {
-      for (const otherUserCandidate of otherUserCandidates || []) {
-        const matchedKey = buildChatKeyCandidates(currentUserCandidate, otherUserCandidate)
-          .find((candidateKey) => chatKeySet.has(candidateKey));
-
-        if (matchedKey) {
-          return matchedKey;
-        }
-      }
-    }
-
-    return "";
-  };
-
-  const resolveStudentChatKey = async (studentLike = {}) => {
-    const ownerSummaries = await fetchCachedJson(`${DB_URL}/${buildOwnerChatSummariesPath(adminUserId)}.json`, {
-      ttlMs: 30 * 1000,
-      fallbackValue: {},
-    });
-    const existingSummary = findStudentSummary(ownerSummaries, studentLike);
-    if (existingSummary?.chatId) {
-      return existingSummary.chatId;
-    }
-
-    const chatIndex = await fetchCachedJson(`${DB_URL}/Chats.json?shallow=true`, {
-      ttlMs: CHAT_INDEX_CACHE_TTL_MS,
-      fallbackValue: {},
-    });
-    const chatKeySet = new Set(Object.keys(chatIndex || {}));
-    const currentUserCandidates = uniqueNonEmptyValues([adminUserId, adminId]);
-    const otherUserCandidates = getStudentIdentityCandidates(studentLike);
-    const existingChatKey = findExistingChatKey(chatKeySet, currentUserCandidates, otherUserCandidates);
-
-    if (existingChatKey) {
-      return existingChatKey;
-    }
-
-    const fallbackCurrentUserId = currentUserCandidates[0] || "";
-    const fallbackOtherUserId = otherUserCandidates[0] || "";
-    return buildChatKeyCandidates(fallbackCurrentUserId, fallbackOtherUserId)[0] || "";
-  };
-
-  const [studentMarks, setStudentMarks] = useState({});
-  const selectedStudentCourseIds = useMemo(
-    () => getStudentCourseIds({ student: selectedStudent, gradeSubjectsByGrade }),
-    [gradeSubjectsByGrade, selectedStudent?.grade, selectedStudent?.section, selectedStudent?.secation]
-  );
-  const studentMarksFlattened = useMemo(() => {
-    const src = studentMarks || {};
-    const out = {};
-
-    Object.entries(src).forEach(([courseId, node]) => {
-      const normalized = {};
-
-      if (node && (node.teacherName || node.teacher)) {
-        normalized.teacherName = node.teacherName || node.teacher;
-      }
-
-      // already has semester nodes
-      if (node && (node.semester1 || node.semester2)) {
-        if (node.semester1) normalized.semester1 = node.semester1;
-        if (node.semester2) normalized.semester2 = node.semester2;
-        out[courseId] = normalized;
-        return;
-      }
-
-      // quarter keys -> place under semesters
-      const quarterKeys = Object.keys(node || {}).filter((k) => /^quarter\d+/i.test(k));
-      if (quarterKeys.length) {
-        normalized.semester1 = normalized.semester1 || {};
-        normalized.semester2 = normalized.semester2 || {};
-        quarterKeys.forEach((qk) => {
-          const qLower = qk.toLowerCase();
-          if (/quarter[12]/i.test(qLower)) {
-            normalized.semester1[qLower] = node[qk];
-          } else {
-            normalized.semester2[qLower] = node[qk];
-          }
-        });
-        out[courseId] = normalized;
-        return;
-      }
-
-      // fallback: flat assessments -> place under semester2.assessments
-      if (node && node.assessments) {
-        normalized.semester2 = normalized.semester2 || {};
-        normalized.semester2.assessments = node.assessments;
-        out[courseId] = normalized;
-        return;
-      }
-
-      // default: copy whatever node was
-      out[courseId] = normalized;
-    });
-
-    return out;
-  }, [studentMarks]);
-
-  const handleSendMessage = () => {
-    // now newMessageText is defined
-    console.log("Sending message:", newMessageText);
-    // your code to send the message
-  };
 
   // load finance/admin on mount
   useEffect(() => {
     loadFinanceFromStorage();
   }, []);
 
-  useEffect(() => {
-    if (loadingFinance || !activeSchoolCode) {
-      return undefined;
-    }
-
-    let cancelled = false;
-    const cached = readStudentsCache();
-    if (!cached) return undefined;
-
-    if (Array.isArray(cached.studentList) && cached.studentList.length) {
-      const cachedStudentList = cached.studentList;
-      setStudents(cachedStudentList);
-      setStudentsLoading(false);
-
-      hydrateMissingStudentProfileImages(cachedStudentList).then((hydratedStudentList) => {
-        if (cancelled || !Array.isArray(hydratedStudentList) || hydratedStudentList.length === 0) {
-          return;
-        }
-
-        const hasProfileFix = hydratedStudentList.some(
-          (studentItem, index) => studentItem?.profileImage !== cachedStudentList[index]?.profileImage
-        );
-        if (!hasProfileFix) {
-          return;
-        }
-
-        persistStudentList(
-          hydratedStudentList,
-          Array.isArray(cached.gradeOptions) ? cached.gradeOptions : gradeOptions,
-          String(cached.currentAcademicYear || currentAcademicYear || "")
-        );
-      });
-    }
-
-    if (Array.isArray(cached.gradeOptions)) {
-      setGradeOptions(cached.gradeOptions);
-    }
-
-    if (typeof cached.currentAcademicYear === "string") {
-      setCurrentAcademicYear(cached.currentAcademicYear);
-    }
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // If we have a `finance.userId`, fetch the Users record to ensure
   // `name`, `username`, and `profileImage` are up-to-date.
@@ -932,7 +524,7 @@ function StudentsPage() {
 
       const age = computeAge(dobRaw);
 
-      // 5️⃣ Resolve parents: collect first parent name & phone and all parents list
+      // 5ï¸âƒ£ Resolve parents: collect first parent name & phone and all parents list
       const parentIds = rtStudent?.parents ? Object.keys(rtStudent.parents) : (s.parents ? Object.keys(s.parents) : []);
       const parentsList = (await mapInBatches(parentIds, 4, async (parentId) => {
         try {
@@ -958,7 +550,7 @@ function StudentsPage() {
       const parentName = parentsList[0]?.name || null;
       const parentPhone = parentsList[0]?.phone || null;
 
-      // 6️⃣ Set selected student state (include age & parent info)
+      // 6ï¸âƒ£ Set selected student state (include age & parent info)
       if (studentSelectionRequestRef.current !== requestId) {
         return;
       }
@@ -1113,257 +705,14 @@ function StudentsPage() {
 
 
 
-  useEffect(() => {
-    let cancelled = false;
 
-    setGradeSubjectsLoaded(false);
-
-    const loadGradeSubjects = async () => {
-      try {
-        const gradesData = await readSchoolNodeApi("GradeManagement/grades", {});
-
-        if (!cancelled) {
-          setGradeSubjectsByGrade(buildGradeSubjectsByGrade(gradesData));
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setGradeSubjectsByGrade({});
-        }
-      } finally {
-        if (!cancelled) {
-          setGradeSubjectsLoaded(true);
-        }
-      }
-    };
-
-    loadGradeSubjects();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [BIG_NODE_CACHE_TTL_MS, activeSchoolCode, loadingFinance]);
-
-  // ------------------ FETCH STUDENTS (PAGINATED WITH REACT QUERY) ------------------
-  const { data: reactQueryStudents, isLoading: isStudentsQueryLoading, refetch: refetchStudents } = useQuery({
-    queryKey: ['students', schoolCode],
-    queryFn: async () => {
-      const cached = readStudentsCache();
-      if (cached && Array.isArray(cached.studentList)) {
-        setGradeOptions(Array.isArray(cached.gradeOptions) ? cached.gradeOptions : []);
-        setCurrentAcademicYear(String(cached.currentAcademicYear || ""));
-        
-        if (cached.studentList.length < PAGE_SIZE) {
-          setHasMoreStudents(false);
-        }
-        return cached.studentList;
-      }
-
-      try {
-        const [schoolInfoData, gradesData] = await Promise.all([
-          readSchoolNodeApi("schoolInfo", {}),
-          readSchoolNodeApi("GradeManagement/grades", {}),
-        ]);
-        const activeAcademicYear = (schoolInfoData || {}).currentAcademicYear || "";
-        setCurrentAcademicYear(activeAcademicYear);
-
-        const managedGrades = Object.keys(gradesData || {})
-          .filter((gradeKey) => isValidGradeKey(gradeKey))
-          .sort((a, b) => Number(a) - Number(b));
-        setGradeOptions(managedGrades);
-        setSelectedGrade((prev) => {
-          if (prev === "All") return prev;
-          return managedGrades.includes(String(prev)) ? prev : "All";
-        });
-
-        // PAGINATION: Fetch first page only (50 students)
-        const paginatedUrl = `${DB_URL}/StudentDirectory.json?orderBy="$key"&limitToFirst=${PAGE_SIZE}`;
-        const studentDirectoryResponse = await axios.get(paginatedUrl);
-        const studentDirectoryData = studentDirectoryResponse.data || {};
-
-        const directoryStudentList = Object.entries(studentDirectoryData).map(([studentId, student]) =>
-          normalizeStudentSummary(studentId, student)
-        );
-
-        // Set pagination cursor to last student key
-        const studentKeys = Object.keys(studentDirectoryData);
-        if (studentKeys.length > 0) {
-          const lastKey = studentKeys[studentKeys.length - 1];
-          setPaginationCursor(lastKey);
-        }
-        
-        // Check if there are more students
-        setHasMoreStudents(studentKeys.length >= PAGE_SIZE);
-
-        if (directoryStudentList.length > 0) {
-          persistStudentList(directoryStudentList, managedGrades, activeAcademicYear);
-          setStudentsLoading(false);
-          
-          // Hydrate profile images in background
-          hydrateMissingStudentProfileImages(directoryStudentList).then((hydratedList) => {
-            persistStudentList(hydratedList, managedGrades, activeAcademicYear);
-          });
-          return directoryStudentList;
-        }
-
-        // Fallback: If StudentDirectory is empty, fetch from Students node (paginated)
-        const studentsPaginatedUrl = `${DB_URL}/Students.json?orderBy="$key"&limitToFirst=${PAGE_SIZE}`;
-        const studentsResponse = await axios.get(studentsPaginatedUrl);
-        const studentsData = studentsResponse.data || {};
-
-        const studentKeys2 = Object.keys(studentsData);
-        if (studentKeys2.length > 0) {
-          const lastKey = studentKeys2[studentKeys2.length - 1];
-          setPaginationCursor(lastKey);
-        }
-        
-        setHasMoreStudents(studentKeys2.length >= PAGE_SIZE);
-
-        const baseStudentList = studentKeys2.map((id) => normalizeStudentSummary(id, studentsData[id]));
-
-        setStudentsLoading(false);
-        persistStudentList(baseStudentList, managedGrades, activeAcademicYear);
-
-        try {
-          const usersData = await readSchoolNodeApi("Users", {});
-          if (!usersData || typeof usersData !== "object") {
-            return baseStudentList;
-          }
-
-          const hydratedStudentList = baseStudentList.map((student) => {
-            const user = usersData[student.userId] || {};
-            return {
-              ...student,
-              name: user.name || user.username || student.name || "No Name",
-              profileImage: getSafeImage(
-                user?.profileImage,
-                student?.profileImage
-              ),
-              email: user.email || student.email || "",
-            };
-          });
-
-          persistStudentList(hydratedStudentList, managedGrades, activeAcademicYear);
-          return hydratedStudentList;
-        } catch (hydrationErr) {
-          console.warn("Failed to hydrate student profiles:", hydrationErr);
-          return baseStudentList;
-        }
-      } catch (err) {
-        console.error("Error fetching students:", err);
-        return [];
-      } finally {
-        setStudentsLoading(false);
-      }
-    },
-    enabled: Boolean(schoolCode),
-    staleTime: 5 * 60 * 1000, // 5 minutes
-    cacheTime: 10 * 60 * 1000, // 10 minutes
-  });
   
-  // Sync React Query data with local state
-  useEffect(() => {
-    if (reactQueryStudents && Array.isArray(reactQueryStudents)) {
-      setStudents(reactQueryStudents);
-    }
-  }, [reactQueryStudents]);
   
-  // Update loading state
-  useEffect(() => {
-    setStudentsLoading(isStudentsQueryLoading);
-  }, [isStudentsQueryLoading]);
 
-  // ------------------ LOAD MORE STUDENTS ------------------
-  const loadMoreStudents = async () => {
-    if (!hasMoreStudents || loadingMore || !paginationCursor) return;
 
-    setLoadingMore(true);
-    try {
-      // Fetch next page using cursor
-      const paginatedUrl = `${DB_URL}/StudentDirectory.json?orderBy="$key"&startAfter="${paginationCursor}"&limitToFirst=${PAGE_SIZE}`;
-      const response = await axios.get(paginatedUrl);
-      const newStudentsData = response.data || {};
 
-      if (Object.keys(newStudentsData).length === 0) {
-        setHasMoreStudents(false);
-        setLoadingMore(false);
-        return;
-      }
 
-      const newStudentList = Object.entries(newStudentsData).map(([studentId, student]) =>
-        normalizeStudentSummary(studentId, student)
-      );
 
-      // Update cursor
-      const studentKeys = Object.keys(newStudentsData);
-      if (studentKeys.length > 0) {
-        const lastKey = studentKeys[studentKeys.length - 1];
-        setPaginationCursor(lastKey);
-      }
-
-      // Check if there are more students
-      setHasMoreStudents(studentKeys.length >= PAGE_SIZE);
-
-      // Append to existing students
-      const updatedStudentList = [...students, ...newStudentList];
-      persistStudentList(updatedStudentList, gradeOptions, currentAcademicYear);
-
-      // Hydrate profile images in background
-      hydrateMissingStudentProfileImages(newStudentList).then((hydratedList) => {
-        const mergedList = updatedStudentList.map((student) => {
-          const hydrated = hydratedList.find((h) => h.studentId === student.studentId);
-          return hydrated || student;
-        });
-        persistStudentList(mergedList, gradeOptions, currentAcademicYear);
-      });
-    } catch (err) {
-      console.error("Error loading more students:", err);
-    } finally {
-      setLoadingMore(false);
-    }
-  };
-
-  const previousAcademicYearKey = useMemo(() => {
-    const text = String(currentAcademicYear || "").trim();
-    if (!text) return "";
-    const normalized = text.replace("/", "_");
-    const parts = normalized.split("_");
-    if (parts.length !== 2) return "";
-    const start = Number(parts[0]);
-    if (Number.isNaN(start)) return "";
-    return `${start - 1}_${start}`;
-  }, [currentAcademicYear]);
-
-  const filteredStudentsBase = useMemo(() => {
-    const normalizedSearch = searchTerm.trim().toLowerCase();
-    return students.filter((s) => {
-      if (selectedGrade !== "All" && String(s.grade) !== String(selectedGrade)) return false;
-      if (selectedSection !== "All" && String(s.section) !== String(selectedSection)) return false;
-
-      if (!normalizedSearch) return true;
-
-      const haystack = [s.name, s.studentId, s.userId, s.email, s.grade, s.section]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-
-      return haystack.includes(normalizedSearch);
-    });
-  }, [students, selectedGrade, selectedSection, searchTerm]);
-
-  const currentYearStudents = useMemo(() => {
-    if (!currentAcademicYear) return filteredStudentsBase;
-    const normalizedCurrentYear = normalizeAcademicYear(currentAcademicYear);
-    return filteredStudentsBase.filter(
-      (student) => normalizeAcademicYear(student.academicYear) === normalizedCurrentYear
-    );
-  }, [filteredStudentsBase, currentAcademicYear]);
-
-  const lastYearStudents = useMemo(() => {
-    if (!previousAcademicYearKey) return [];
-    return filteredStudentsBase.filter(
-      (student) => String(student.academicYear || "").trim() === String(previousAcademicYearKey).trim()
-    );
-  }, [filteredStudentsBase, previousAcademicYearKey]);
 
   // ------------------ UPDATE SECTIONS WHEN GRADE CHANGES ------------------
   useEffect(() => {
@@ -1377,451 +726,12 @@ function StudentsPage() {
   }, [selectedGrade, students]);
 
 
-  // ---------------- FETCH PERFORMANCE ----------------
-  // This effect reads ClassMarks and stores only the entries for the selected student.
-  useEffect(() => {
-    if (studentTab !== "performance" || !selectedStudent?.studentId) {
-      setStudentMarks({});
-      return;
-    }
-
-    if (!gradeSubjectsLoaded) {
-      return undefined;
-    }
-
-    let cancelled = false;
-
-    async function fetchMarks() {
-      try {
-        const marksObj = {};
-        if (selectedStudentCourseIds.length > 0) {
-          const courseMarkEntries = await Promise.all(
-            selectedStudentCourseIds.map(async (courseId) => {
-              const courseMarks = await fetchCachedJson(`${DB_URL}/ClassMarks/${encodeURIComponent(courseId)}.json`, {
-                ttlMs: BIG_NODE_CACHE_TTL_MS,
-                fallbackValue: {},
-              });
-              return [courseId, courseMarks];
-            })
-          );
-
-          courseMarkEntries.forEach(([courseId, courseMarks]) => {
-            const found = findStudentScopedNode(courseMarks, selectedStudent);
-            if (found) {
-              marksObj[courseId] = found;
-            }
-          });
-        } else {
-          const classMarks = await fetchCachedJson(`${DB_URL}/ClassMarks.json`, {
-            ttlMs: BIG_NODE_CACHE_TTL_MS,
-            fallbackValue: {},
-          });
-
-          Object.entries(classMarks || {}).forEach(([courseId, students]) => {
-            const found = findStudentScopedNode(students, selectedStudent);
-            if (found) {
-              marksObj[courseId] = found;
-            }
-          });
-        }
-
-        if (!cancelled) {
-          setStudentMarks(marksObj);
-        }
-      } catch (err) {
-        console.error("Marks fetch error:", err);
-        if (!cancelled) setStudentMarks({});
-      }
-    }
-
-    fetchMarks();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [BIG_NODE_CACHE_TTL_MS, DB_URL, gradeSubjectsLoaded, selectedStudent?.studentId, selectedStudent?.userId, selectedStudentCourseIds, studentTab]);
-
-  useEffect(() => {
-    if (studentTab !== "attendance" || !selectedStudent?.studentId) return undefined;
-
-    if (!gradeSubjectsLoaded) {
-      return undefined;
-    }
-
-    let cancelled = false;
-
-    const fetchAttendanceData = async () => {
-      try {
-        const attendanceData = [];
-        if (selectedStudentCourseIds.length > 0) {
-          const attendanceEntries = await Promise.all(
-            selectedStudentCourseIds.map(async (courseId) => {
-              const courseAttendance = await fetchCachedJson(`${DB_URL}/Attendance/${encodeURIComponent(courseId)}.json`, {
-                ttlMs: BIG_NODE_CACHE_TTL_MS,
-                fallbackValue: {},
-              });
-              return [courseId, courseAttendance];
-            })
-          );
-
-          attendanceEntries.forEach(([courseId, datesObj]) => {
-            Object.entries(datesObj || {}).forEach(([date, studentsObj]) => {
-              const status = studentsObj?.[selectedStudent.studentId];
-              if (!status) {
-                return;
-              }
-
-              attendanceData.push({
-                courseId,
-                date,
-                status,
-                teacherName: studentsObj?.[selectedStudent.studentId]?.teacherName || "Teacher",
-              });
-            });
-          });
-        } else {
-          const attendanceRaw = await fetchCachedJson(`${DB_URL}/Attendance.json`, {
-            ttlMs: BIG_NODE_CACHE_TTL_MS,
-            fallbackValue: {},
-          });
-
-          Object.entries(attendanceRaw || {}).forEach(([courseId, datesObj]) => {
-            Object.entries(datesObj || {}).forEach(([date, studentsObj]) => {
-              const status = studentsObj?.[selectedStudent.studentId];
-              if (!status) {
-                return;
-              }
-
-              attendanceData.push({
-                courseId,
-                date,
-                status,
-                teacherName: studentsObj?.[selectedStudent.studentId]?.teacherName || "Teacher",
-              });
-            });
-          });
-        }
-
-        if (cancelled) {
-          return;
-        }
-
-        setAttendance(attendanceData);
-        setSelectedStudent((prev) => {
-          if (!prev || String(prev.studentId) !== String(selectedStudent.studentId)) {
-            return prev;
-          }
-
-          return {
-            ...prev,
-            attendance: attendanceData,
-          };
-        });
-      } catch (error) {
-        if (!cancelled) {
-          setAttendance([]);
-        }
-      }
-    };
-
-    fetchAttendanceData();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [BIG_NODE_CACHE_TTL_MS, DB_URL, gradeSubjectsLoaded, selectedStudent?.studentId, selectedStudent?.userId, selectedStudentCourseIds, studentTab]);
-
-  useEffect(() => {
-    if (studentTab !== "payment" || !selectedStudent) return;
-
-    const fetchPaymentHistory = async () => {
-      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-      const year = new Date().getFullYear();
-      const studentKey = selectedStudent?.studentId || selectedStudent?.userId || String(selectedStudent?.id || "");
-      const out = {};
-
-      await Promise.all(
-        months.map(async (m) => {
-          const key = `${year}-${m}`;
-          try {
-            const node = await fetchCachedJson(`${DB_URL}/monthlyPaid/${key}.json`, {
-              ttlMs: BIG_NODE_CACHE_TTL_MS,
-              fallbackValue: {},
-            });
-            out[key] = !!(node && (node[studentKey] || node[String(studentKey)]));
-          } catch {
-            out[key] = false;
-          }
-        })
-      );
-
-      setPaymentHistory(out);
-    };
-
-    fetchPaymentHistory();
-  }, [studentTab, selectedStudent?.studentId, selectedStudent?.userId, selectedStudent?.id, DB_URL]);
 
 
-  //-------------------------Fetch unread status for each student--------------
-  useEffect(() => {
-    const fetchUnread = async () => {
-      const ownerSummaries = await fetchCachedJson(`${DB_URL}/${buildOwnerChatSummariesPath(adminUserId)}.json`, {
-        ttlMs: 30 * 1000,
-        fallbackValue: {},
-      });
-      const unreadEntries = students.map((studentItem) => {
-        const studentKeys = getStudentIdentityCandidates(studentItem);
-        const summary = findStudentSummary(ownerSummaries, studentItem);
 
-        return {
-          studentKeys,
-          hasUnread: Number(summary?.unreadCount || 0) > 0,
-        };
-      });
 
-      const nextMap = unreadEntries.reduce((acc, entry) => {
-        (entry?.studentKeys || []).forEach((studentKey) => {
-          acc[studentKey] = Boolean(entry?.hasUnread);
-        });
-        return acc;
-      }, {});
 
-      setUnreadMap(nextMap);
-    };
 
-    if (students.length > 0 && adminUserId) {
-      fetchUnread();
-      return;
-    }
-
-    setUnreadMap({});
-  }, [DB_URL, students, adminId, adminUserId]);
-
-  // ---------------- SEND MESSAGE ----------------
-  const sendPopupMessage = async () => {
-    if (!popupInput.trim() || !selectedStudent) return;
-
-    const newMessage = {
-      senderId: adminUserId,
-      receiverId: selectedStudent.userId,
-      text: popupInput,
-      timeStamp: Date.now(),
-      seen: false
-    };
-
-    try {
-      const chatKey = await resolveStudentChatKey(selectedStudent);
-      if (!chatKey) {
-        return;
-      }
-
-      // 1) push message
-      const pushRes = await axios.post(
-        `${DB_URL}/Chats/${chatKey}/messages.json`,
-        {
-          senderId: newMessage.senderId,
-          receiverId: newMessage.receiverId,
-          type: newMessage.type || "text",
-          text: newMessage.text || "",
-          imageUrl: newMessage.imageUrl || null,
-          replyTo: newMessage.replyTo || null,
-          seen: false,
-          edited: false,
-          deleted: false,
-          timeStamp: newMessage.timeStamp
-        }
-      );
-
-      const generatedId = pushRes.data && pushRes.data.name;
-
-      await axios.patch(
-        `${DB_URL}/Chats/${chatKey}.json`,
-        {
-          participants: {
-            [adminUserId]: true,
-            [selectedStudent.userId]: true,
-          },
-        }
-      );
-
-      await Promise.all([
-        axios.patch(
-          `${DB_URL}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
-          buildChatSummaryUpdate({
-            chatId: chatKey,
-            otherUserId: selectedStudent.userId,
-            unreadCount: 0,
-            lastMessageText: newMessage.text || "",
-            lastMessageType: newMessage.type || "text",
-            lastMessageTime: newMessage.timeStamp,
-            lastSenderId: adminUserId,
-            lastMessageSeen: false,
-            lastMessageSeenAt: null,
-          })
-        ),
-        axios.patch(
-          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
-          buildChatSummaryUpdate({
-            chatId: chatKey,
-            otherUserId: adminUserId,
-            lastMessageText: newMessage.text || "",
-            lastMessageType: newMessage.type || "text",
-            lastMessageTime: newMessage.timeStamp,
-            lastSenderId: adminUserId,
-            lastMessageSeen: false,
-            lastMessageSeenAt: null,
-          })
-        ),
-      ]).catch(() => {});
-
-      // 3) increment unread for receiver summary
-      try {
-        const summaryRes = await axios.get(
-          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`
-        );
-        const summary = normalizeChatSummaryValue(summaryRes.data, {
-          chatId: chatKey,
-          otherUserId: adminUserId,
-        });
-        await axios.patch(
-          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
-          buildChatSummaryUpdate({
-            chatId: chatKey,
-            otherUserId: adminUserId,
-            unreadCount: Number(summary.unreadCount || 0) + 1,
-          })
-        );
-      } catch (uErr) {
-        await axios.patch(
-          `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
-          buildChatSummaryUpdate({
-            chatId: chatKey,
-            otherUserId: adminUserId,
-            unreadCount: 1,
-          })
-        );
-      }
-
-      // 4) update UI
-      setPopupMessages(prev => [...prev, { messageId: generatedId || `${Date.now()}`, ...newMessage, sender: "admin" }]);
-      setPopupInput("");
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  // General sendMessage used by the inline chat input (uses `newMessageText`)
-  const sendMessage = async () => {
-    if (!newMessageText.trim() || !selectedStudent) return;
-
-    const newMessage = {
-      senderId: adminUserId,
-      receiverId: selectedStudent.userId,
-      text: newMessageText,
-      timeStamp: Date.now(),
-      seen: false,
-    };
-
-    try {
-      const chatKey = await resolveStudentChatKey(selectedStudent);
-      if (!chatKey) {
-        return;
-      }
-
-      // push message with full schema
-      try {
-        const pushRes = await axios.post(
-          `${DB_URL}/Chats/${chatKey}/messages.json`,
-          {
-            senderId: newMessage.senderId,
-            receiverId: newMessage.receiverId,
-            type: newMessage.type || "text",
-            text: newMessage.text || "",
-            imageUrl: null,
-            replyTo: null,
-            seen: false,
-            edited: false,
-            deleted: false,
-            timeStamp: newMessage.timeStamp,
-          }
-        );
-
-        const generatedId = pushRes.data && pushRes.data.name;
-
-        await axios.patch(
-          `${DB_URL}/Chats/${chatKey}.json`,
-          {
-            participants: { [adminUserId]: true, [selectedStudent.userId]: true },
-          }
-        );
-
-        await Promise.all([
-          axios.patch(
-            `${DB_URL}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
-            buildChatSummaryUpdate({
-              chatId: chatKey,
-              otherUserId: selectedStudent.userId,
-              unreadCount: 0,
-              lastMessageText: newMessage.text || "",
-              lastMessageType: newMessage.type || "text",
-              lastMessageTime: newMessage.timeStamp,
-              lastSenderId: adminUserId,
-              lastMessageSeen: false,
-              lastMessageSeenAt: null,
-            })
-          ),
-          axios.patch(
-            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
-            buildChatSummaryUpdate({
-              chatId: chatKey,
-              otherUserId: adminUserId,
-              lastMessageText: newMessage.text || "",
-              lastMessageType: newMessage.type || "text",
-              lastMessageTime: newMessage.timeStamp,
-              lastSenderId: adminUserId,
-              lastMessageSeen: false,
-              lastMessageSeenAt: null,
-            })
-          ),
-        ]).catch(() => {});
-
-        // update receiver unread summary
-        try {
-          const summaryRes = await axios.get(
-            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`
-          );
-          const summary = normalizeChatSummaryValue(summaryRes.data, {
-            chatId: chatKey,
-            otherUserId: adminUserId,
-          });
-          await axios.patch(
-            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
-            buildChatSummaryUpdate({
-              chatId: chatKey,
-              otherUserId: adminUserId,
-              unreadCount: Number(summary.unreadCount || 0) + 1,
-            })
-          );
-        } catch (uErr) {
-          await axios.patch(
-            `${DB_URL}/${buildChatSummaryPath(selectedStudent.userId, chatKey)}.json`,
-            buildChatSummaryUpdate({
-              chatId: chatKey,
-              otherUserId: adminUserId,
-              unreadCount: 1,
-            })
-          );
-        }
-
-        setPopupMessages(prev => [...prev, { messageId: generatedId || `${Date.now()}`, ...newMessage, sender: 'admin' }]);
-        setNewMessageText("");
-      } catch (err) {
-        console.error("Failed to send message:", err);
-      }
-    } catch (err) {
-      console.error("Failed to send message:", err);
-    }
-  };
 
   // ---------------- CLOSE DROPDOWN ON OUTSIDE CLICK ----------------
   useEffect(() => {
@@ -1851,77 +761,6 @@ function StudentsPage() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // ---------------- MARK MESSAGES AS SEEN ----------------
-  useEffect(() => {
-    if (!studentChatOpen || !selectedStudent) return;
-
-    let isActive = true;
-    let unsubscribe = () => {};
-
-    const startListening = async () => {
-      const chatKey = await resolveStudentChatKey(selectedStudent);
-      if (!isActive || !chatKey) {
-        return;
-      }
-
-      const messagesRef = ref(dbRT, `Chats/${chatKey}/messages`);
-      unsubscribe = onValue(messagesRef, async (snapshot) => {
-        const data = snapshot.val() || {};
-        const list = Object.entries(data)
-          .map(([id, msg]) => ({ messageId: id, ...msg }))
-          .sort((a, b) => a.timeStamp - b.timeStamp);
-        setPopupMessages(list);
-
-        const updates = {};
-        const hasUnseenIncomingMessages = Object.values(data).some(
-          (msg) => msg && msg.receiverId === adminUserId && !msg.seen
-        );
-        Object.entries(data).forEach(([msgId, msg]) => {
-          if (msg && msg.receiverId === adminUserId && !msg.seen) {
-            updates[`Chats/${chatKey}/messages/${msgId}/seen`] = true;
-          }
-        });
-
-        if (Object.keys(updates).length > 0) {
-          try {
-            await axios.patch(`${DB_URL}/.json`, updates);
-          } catch (err) {
-            console.error('Failed to patch seen updates:', err);
-          }
-        }
-
-        axios.patch(
-          `${DB_URL}/${buildChatSummaryPath(adminUserId, chatKey)}.json`,
-          buildChatSummaryUpdate({
-            chatId: chatKey,
-            otherUserId: selectedStudent.userId,
-            unreadCount: 0,
-            ...(hasUnseenIncomingMessages
-              ? {
-                  lastMessageSeen: true,
-                  lastMessageSeenAt: Date.now(),
-                }
-              : {}),
-          })
-        ).catch(() => {});
-
-        setUnreadMap((previousMap) => {
-          const nextMap = { ...previousMap };
-          getStudentIdentityCandidates(selectedStudent).forEach((studentKey) => {
-            nextMap[studentKey] = false;
-          });
-          return nextMap;
-        });
-      });
-    };
-
-    startListening();
-
-    return () => {
-      isActive = false;
-      unsubscribe();
-    };
-  }, [DB_URL, studentChatOpen, selectedStudent?.studentId, selectedStudent?.userId, adminId, adminUserId]);
 
   const attendanceStats = useMemo(() => {
     if (!selectedStudent?.attendance) return null;
@@ -2664,7 +1503,7 @@ function StudentsPage() {
                                 <div style={{ minWidth: 0 }}>
                                   <h3 style={{ margin: 0, fontSize: "14px", color: "var(--text-primary)", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</h3>
                                   <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: 4 }}>
-                                    Grade {s.grade} • Section {s.section}
+                                    Grade {s.grade} â€¢ Section {s.section}
                                   </div>
                                 </div>
                               </div>
@@ -2774,7 +1613,7 @@ function StudentsPage() {
             boxShadow: "var(--shadow-soft)",
           }}
         >
-          ×
+          Ã—
         </button>
       </div>
     )}
@@ -2798,7 +1637,7 @@ function StudentsPage() {
             lineHeight: 1,
           }}
         >
-          ⤢
+          â¤¢
         </button>
       </div>
     )}
@@ -3826,7 +2665,7 @@ function StudentsPage() {
                 fontSize: "18px",
               }}
             >
-              ⤢
+              â¤¢
             </button>
             {/* Close */}
             <button
@@ -3838,7 +2677,7 @@ function StudentsPage() {
                 cursor: "pointer",
               }}
             >
-              ×
+              Ã—
             </button>
           </div>
         </div>
@@ -4005,7 +2844,7 @@ function StudentsPage() {
           <ProfileAvatar src={selectedStudent.profileImage} name={selectedStudent.name} alt={selectedStudent.name} style={{ width: 56, height: 56, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.8)", objectFit: "cover" }} />
           <div>
             <div style={{ fontSize: 18, fontWeight: 800 }}>{selectedStudent.name || "Student"}</div>
-            <div style={{ fontSize: 12, opacity: 0.95 }}>{selectedStudent.studentId} • Grade {selectedStudent.grade || "-"} • Section {selectedStudent.section || "-"}</div>
+            <div style={{ fontSize: 12, opacity: 0.95 }}>{selectedStudent.studentId} â€¢ Grade {selectedStudent.grade || "-"} â€¢ Section {selectedStudent.section || "-"}</div>
           </div>
         </div>
 

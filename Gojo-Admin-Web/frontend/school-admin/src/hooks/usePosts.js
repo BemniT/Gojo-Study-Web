@@ -5,7 +5,7 @@ import { optimizePostMedia } from "../utils/postMedia.js";
 
 const API_BASE = `${BACKEND_BASE}/api`;
 const POSTS_CACHE_TTL_MS = 10 * 60 * 1000;
-const FETCH_LIMIT = 60;
+const FETCH_LIMIT = 20;
 const CACHE_LIMIT = 60;
 const DEFAULT_PROFILE_IMAGE = "/default-profile.png";
 
@@ -88,8 +88,11 @@ export function getSafeMediaUrl(value) {
 }
 
 export const MESSAGE_PREVIEW_LIMIT = 220;
+export const DEFAULT_TARGET_ROLE_OPTIONS = [
+  "all", "student", "parent", "teacher", "registerer", "finance", "hr", "admin",
+];
 
-export function usePosts({ adminUserId, schoolScopeCode, schoolCode }) {
+export function usePosts({ adminUserId, schoolScopeCode, schoolCode, admin }) {
   const effectiveCode = schoolScopeCode || schoolCode || "";
   const initialPosts = readPostsCache(effectiveCode);
 
@@ -98,15 +101,62 @@ export function usePosts({ adminUserId, schoolScopeCode, schoolCode }) {
   const [postsInitialized, setPostsInitialized] = useState(initialPosts.length > 0);
   const [likePendingPostIds, setLikePendingPostIds] = useState({});
   const [expandedPostDescriptions, setExpandedPostDescriptions] = useState({});
+
+  // Post creation state
+  const [postText, setPostText] = useState("");
+  const [postMedia, setPostMedia] = useState(null);
+  const [postMediaMeta, setPostMediaMeta] = useState(null);
+  const [isOptimizingMedia, setIsOptimizingMedia] = useState(false);
+  const [targetRole, setTargetRole] = useState("all");
+  const [targetOptions] = useState(DEFAULT_TARGET_ROLE_OPTIONS);
+  const [postSubmitting, setPostSubmitting] = useState(false);
+  const [postSubmitError, setPostSubmitError] = useState("");
+  const fileInputRef = useRef(null);
+
   const requestIdRef = useRef(0);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  const loadMorePosts = useCallback(async () => {
+    if (loadingMore || !hasMore || !effectiveCode || posts.length === 0) return;
+    setLoadingMore(true);
+    try {
+      const oldest = posts[posts.length - 1];
+      const beforeTime = oldest?.time || oldest?.createdAt || "";
+      const res = await axios.get(`${API_BASE}/get_posts`, {
+        params: { schoolCode: effectiveCode, limit: FETCH_LIMIT, before: beforeTime },
+        timeout: 4500,
+      });
+      const raw = Array.isArray(res.data) ? res.data : [];
+      if (raw.length < FETCH_LIMIT) setHasMore(false);
+      setPosts((prev) => [...prev, ...raw.filter(Boolean)]);
+    } catch {} finally {
+      setLoadingMore(false);
+    }
+  }, [posts, hasMore, loadingMore, effectiveCode]);
 
   const currentLikeActorId = adminUserId || "";
 
-  const fetchPosts = useCallback(async () => {
+  const fetchPosts = useCallback(async ({ force = false } = {}) => {
     const id = ++requestIdRef.current;
     const code = effectiveCode;
     if (!code) { setPostsLoading(false); return; }
-
+    // Check cache freshness first
+    if (!force) {
+      try {
+        const raw = localStorage.getItem(`dashboard_posts_cache_${code}`);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          const expiresAt = Number(parsed?.expiresAt || 0);
+          if (expiresAt > Date.now() && Array.isArray(parsed?.posts) && parsed.posts.length > 0) {
+            setPosts(parsed.posts);
+            setPostsInitialized(true);
+            setPostsLoading(false);
+            return;
+          }
+        }
+      } catch {}
+    }
     setPostsLoading(true);
     try {
       const res = await axios.get(`${API_BASE}/get_posts`, {
@@ -138,6 +188,26 @@ export function usePosts({ adminUserId, schoolScopeCode, schoolCode }) {
     setExpandedPostDescriptions((prev) => ({ ...prev, [postId]: !prev[postId] }));
   }, []);
 
+  /**
+   * Mark a post as seen locally. The backend write is handled by
+   * useTopbarNotifications.markPostAsSeen when a user clicks a notification.
+   * This function only updates local state + cache so derived counts
+   * (e.g. dashboard notification badge) reflect the change immediately.
+   */
+  const markPostSeen = useCallback((postId) => {
+    const targetId = String(postId || "");
+    if (!targetId || !currentLikeActorId) return;
+    setPosts((prev) => {
+      const next = prev.map((p) =>
+        String(p?.postId) === targetId
+          ? { ...p, seenBy: { ...(p.seenBy || {}), [currentLikeActorId]: true } }
+          : p
+      );
+      writePostsCache(effectiveCode, next);
+      return next;
+    });
+  }, [currentLikeActorId, effectiveCode]);
+
   const handleLike = useCallback(async (postId) => {
     const id = String(postId || "").trim();
     if (!currentLikeActorId || !id || likePendingPostIds[id]) return;
@@ -155,7 +225,12 @@ export function usePosts({ adminUserId, schoolScopeCode, schoolCode }) {
     setPosts((prev) => prev.map((p) => String(p?.postId) === id ? { ...p, likeCount: Object.keys(nextLikes).length, likes: nextLikes } : p));
 
     try {
-      const res = await axios.post(`${API_BASE}/like_post`, { postId: id, userId: currentLikeActorId, schoolCode: effectiveCode });
+      const res = await axios.post(`${API_BASE}/like_post`, {
+        postId: id,
+        adminId: admin?.adminId || admin?.userId || currentLikeActorId,
+        userId: admin?.userId || currentLikeActorId,
+        schoolCode: effectiveCode,
+      });
       if (!res.data?.success) throw new Error();
       const liked = Boolean(res.data.liked);
       const count = Number(res.data.likeCount);
@@ -168,27 +243,128 @@ export function usePosts({ adminUserId, schoolScopeCode, schoolCode }) {
     } finally {
       setLikePendingPostIds((s) => { const n = { ...s }; delete n[id]; return n; });
     }
-  }, [currentLikeActorId, effectiveCode, likePendingPostIds, posts]);
+  }, [currentLikeActorId, effectiveCode, likePendingPostIds, posts, admin]);
 
   const handleDelete = useCallback(async (postId) => {
-    // Optimistically remove
-    setPosts((prev) => prev.filter((p) => String(p?.postId) !== String(postId)));
+    const targetId = String(postId);
+    setPosts((prev) => {
+      const next = prev.filter((p) => String(p?.postId) !== targetId);
+      writePostsCache(effectiveCode, next);
+      return next;
+    });
     try {
-      await axios.delete(`${API_BASE}/delete_post/${postId}`);
+      await axios.delete(`${API_BASE}/delete_post/${postId}`, {
+        data: { adminId: admin?.adminId || admin?.userId || "" },
+      });
     } catch {
-      fetchPosts(); // restore on failure
+      // Server failed - revert by forcing a refresh
+      fetchPosts({ force: true });
     }
-  }, [fetchPosts]);
+  }, [fetchPosts, effectiveCode, admin]);
 
   const editPost = useCallback(async (postId, newText) => {
     if (!newText?.trim()) return;
-    setPosts((prev) => prev.map((p) => String(p?.postId) === String(postId) ? { ...p, message: newText } : p));
+    setPosts((prev) => {
+      const next = prev.map((p) => String(p?.postId) === String(postId) ? { ...p, message: newText } : p);
+      writePostsCache(effectiveCode, next);
+      return next;
+    });
     try {
-      await axios.post(`${API_BASE}/edit_post/${postId}`, { postText: newText });
+      await axios.post(`${API_BASE}/edit_post/${postId}`, {
+        adminId: admin?.adminId || admin?.userId || "",
+        postText: newText,
+      });
     } catch {
-      fetchPosts();
+      fetchPosts({ force: true });
     }
-  }, [fetchPosts]);
+  }, [fetchPosts, effectiveCode, admin]);
+
+  // ---- Create post flow ----
+  const handlePostMediaSelection = useCallback(async (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) {
+      setPostMedia(null);
+      setPostMediaMeta(null);
+      return;
+    }
+    setIsOptimizingMedia(true);
+    try {
+      const result = await optimizePostMedia(file);
+      setPostMedia(result.file);
+      setPostMediaMeta({
+        originalSize: result.originalSize,
+        finalSize: result.finalSize,
+        wasCompressed: result.wasCompressed,
+        wasConvertedToJpeg: result.wasConvertedToJpeg,
+      });
+    } catch (error) {
+      console.error("Failed to optimize media:", error);
+      setPostMedia(file);
+      setPostMediaMeta({
+        originalSize: Number(file.size || 0),
+        finalSize: Number(file.size || 0),
+        wasCompressed: false,
+        wasConvertedToJpeg: false,
+      });
+    } finally {
+      setIsOptimizingMedia(false);
+    }
+  }, []);
+
+  const handleOpenPostMediaPicker = useCallback(() => {
+    if (isOptimizingMedia) return;
+    fileInputRef.current?.click();
+  }, [isOptimizingMedia]);
+
+  const resetCreatePostForm = useCallback(() => {
+    setPostText("");
+    setPostMedia(null);
+    setPostMediaMeta(null);
+    setPostSubmitError("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, []);
+
+  const handleSubmitCreatePost = useCallback(async () => {
+    if (!postText.trim() && !postMedia) return false;
+    if (isOptimizingMedia || postSubmitting) return false;
+
+    const adminId = admin?.adminId || "";
+    const userId = admin?.userId || adminId;
+    if (!adminId || !userId) {
+      setPostSubmitError("Session expired. Please log in again.");
+      return false;
+    }
+
+    setPostSubmitting(true);
+    setPostSubmitError("");
+    try {
+      const formData = new FormData();
+      formData.append("message", postText);
+      formData.append("adminId", adminId);
+      formData.append("userId", userId);
+      formData.append("adminName", admin?.name || admin?.username || "Admin");
+      formData.append("adminProfile", admin?.profileImage || DEFAULT_PROFILE_IMAGE);
+      formData.append("schoolCode", effectiveCode || "");
+      formData.append("targetRole", targetRole || "all");
+      if (postMedia) formData.append("post_media", postMedia);
+
+      const res = await axios.post(`${API_BASE}/create_post`, formData);
+      if (res.data?.success === false) {
+        throw new Error(res.data.message || "Post could not be published.");
+      }
+      resetCreatePostForm();
+      await fetchPosts({ force: true });
+      return true;
+    } catch (err) {
+      const msg = err?.response?.data?.message || err?.message || "Post could not be published.";
+      setPostSubmitError(msg);
+      return false;
+    } finally {
+      setPostSubmitting(false);
+    }
+  }, [postText, postMedia, isOptimizingMedia, postSubmitting, admin, effectiveCode, targetRole, fetchPosts, resetCreatePostForm]);
+
+  const canSubmitPost = Boolean(postText.trim() || postMedia) && !isOptimizingMedia;
 
   return {
     posts,
@@ -199,6 +375,7 @@ export function usePosts({ adminUserId, schoolScopeCode, schoolCode }) {
     currentLikeActorId,
     fetchPosts,
     togglePostDescription,
+    markPostSeen,
     handleLike,
     handleDelete,
     editPost,
@@ -210,5 +387,24 @@ export function usePosts({ adminUserId, schoolScopeCode, schoolCode }) {
     getSafeMediaUrl,
     MESSAGE_PREVIEW_LIMIT,
     shouldShowPostsLoadingState: (postsLoading || !postsInitialized) && posts.length === 0,
+    hasMore,
+    loadingMore,
+    loadMorePosts,
+
+    // Create post flow
+    postText, setPostText,
+    postMedia, setPostMedia,
+    postMediaMeta,
+    isOptimizingMedia,
+    targetRole, setTargetRole,
+    targetOptions,
+    postSubmitting,
+    postSubmitError,
+    fileInputRef,
+    handlePostMediaSelection,
+    handleOpenPostMediaPicker,
+    handleSubmitCreatePost,
+    canSubmitPost,
+    resetCreatePostForm,
   };
 }

@@ -96,6 +96,15 @@ export function pickPreferredSchoolScopeCode(candidateCodes) {
 
 export async function resolveSchoolScopeCandidates(seedCodes, { apiBase, dbUrl }) {
   const normalizedSeedCodes = getSchoolScopeAliasCodes(Array.isArray(seedCodes) ? seedCodes : []);
+  // Fast path: if any seed already contains a "-", it's a full qualified code (e.g. ET-ORO-ADA-GMI).
+  // No network lookup needed — saves 100% of Firebase reads on the common case.
+  const fullyQualified = normalizedSeedCodes.filter((c) => c.includes("-"));
+  if (fullyQualified.length > 0) {
+    const result = getSchoolScopeAliasCodes(fullyQualified);
+    schoolScopeCache.set(normalizedSeedCodes.join("|") || "__default__", result);
+    return result;
+  }
+
   const cacheKey = normalizedSeedCodes.join("|") || "__default__";
   const cachedCandidates = schoolScopeCache.get(cacheKey);
   if (cachedCandidates) {
@@ -174,32 +183,8 @@ export async function resolveSchoolScopeCandidates(seedCodes, { apiBase, dbUrl }
           }
         });
 
-        if (schoolKeys.length > 0 && schoolKeys.length <= 60) {
-          const schoolInfoResponses = await Promise.all(
-            schoolKeys.map((schoolKey) =>
-              axios
-                .get(`${dbUrl}/Platform1/Schools/${encodeURIComponent(schoolKey)}/schoolInfo.json`, {
-                  timeout: 3500,
-                })
-                .then((response) => ({ schoolKey, schoolInfo: response.data }))
-                .catch(() => ({ schoolKey, schoolInfo: null }))
-            )
-          );
-
-          schoolInfoResponses.forEach(({ schoolKey, schoolInfo }) => {
-            const aliases = uniqueNonEmptyValues([
-              schoolKey,
-              schoolInfo?.schoolCode,
-              schoolInfo?.shortName,
-            ]);
-
-            if (
-              aliases.some((alias) => seedSet.has(String(alias || "").trim().toLowerCase()))
-            ) {
-              resolvedCandidates.push(...aliases);
-            }
-          });
-        }
+        // N+1 schoolInfo fan-out removed — relied on cached candidates and key-matching above.
+        // If a school code cannot be resolved from the index alone, the caller should pass a full ET-XXX-XXX code.
       } catch (error) {
         // Ignore direct Firebase school-index lookup failures and continue with stored values.
       }
