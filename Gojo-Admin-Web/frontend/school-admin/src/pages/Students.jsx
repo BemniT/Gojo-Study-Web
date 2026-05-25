@@ -2,7 +2,7 @@
 import { Link, useNavigate } from "react-router-dom";
 import { 
   FaHome, FaFileAlt, FaChalkboardTeacher, FaCog, 
-  FaSignOutAlt, FaBell, FaFacebookMessenger, FaSearch, FaCalendarAlt, FaCommentDots, FaCheck, FaPaperPlane, FaChartLine, FaChevronDown
+  FaSignOutAlt, FaBell, FaFacebookMessenger, FaSearch, FaCalendarAlt, FaCommentDots, FaCheck, FaPaperPlane, FaChartLine, FaChevronDown, FaTimes, FaExpand
 } from "react-icons/fa";
 import axios from "axios";
 import { format, parseISO, startOfWeek, startOfMonth } from "date-fns";
@@ -28,6 +28,9 @@ import { schoolNodeBase } from "../utils/schoolDbRouting";
 import useStudentsList from "../hooks/useStudentsList";
 import useStudentChat from "../hooks/useStudentChat";
 import useStudentPerformance from "../hooks/useStudentPerformance";
+import StudentAttendanceTab from "../components/dashboard/StudentAttendanceTab";
+import StudentPerformanceTab from "../components/dashboard/StudentPerformanceTab";
+import StudentPaymentTab from "../components/dashboard/StudentPaymentTab";
 
 
 
@@ -1479,9 +1482,9 @@ function StudentsPage() {
                 ) : (
                   <>
                     <FixedSizeList
-                      height={Math.min(600, currentYearStudents.length * 72)}
+                      height={Math.min(600, currentYearStudents.length * 104)}
                       itemCount={currentYearStudents.length}
-                      itemSize={72}
+                      itemSize={104}
                       width={contentWidth}
                       style={{ maxWidth: "100%" }}
                     >
@@ -1613,7 +1616,7 @@ function StudentsPage() {
             boxShadow: "var(--shadow-soft)",
           }}
         >
-          Ã—
+          <FaTimes />
         </button>
       </div>
     )}
@@ -1637,7 +1640,7 @@ function StudentsPage() {
             lineHeight: 1,
           }}
         >
-          â¤¢
+          <FaExpand />
         </button>
       </div>
     )}
@@ -1967,491 +1970,34 @@ function StudentsPage() {
 
       {/* ATTENDANCE TAB */}
       {studentTab === "attendance" && selectedStudent && (
-        <div
-          style={{
-            ...sidebarSectionCardStyle,
-            padding: "14px",
-          }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 12 }}>
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.45px" }}>Attendance</div>
-              <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 6 }}>Simple attendance health by subject.</div>
-            </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 800, textTransform: "uppercase" }}>Present rate</div>
-              <div style={{ fontSize: 22, fontWeight: 900, color: "var(--text-primary)", marginTop: 4 }}>{attendanceStats?.percent || 0}%</div>
-            </div>
-          </div>
-
-          {/* VIEW SWITCH */}
-          <div
-            style={{
-              display: "flex",
-              gap: 6,
-              marginBottom: 10,
-              padding: 4,
-              borderRadius: 999,
-              background: "var(--surface-soft)",
-              border: "1px solid var(--border-soft)",
-            }}
-          >
-            {["daily", "weekly", "monthly"].map((v) => (
-              <button
-                key={v}
-                onClick={() => setAttendanceView(v)}
-                style={{
-                  padding: "4px 10px",
-                  borderRadius: 999,
-                  border: "none",
-                  fontWeight: 700,
-                  fontSize: 10,
-                  cursor: "pointer",
-                  background: attendanceView === v ? "var(--accent-strong)" : "var(--surface-strong)",
-                  color: attendanceView === v ? "#fff" : "var(--text-primary)",
-                }}
-              >
-                {v.toUpperCase()}
-              </button>
-            ))}
-          </div>
-          {/* SUBJECT CARDS */}
-          {Object.entries(attendanceBySubject)
-            .filter(
-              ([course]) =>
-                attendanceCourseFilter === "All" || course === attendanceCourseFilter
-            )
-            .map(([course, records]) => {
-              const today = new Date().toDateString();
-              const weekRecords = records.filter(
-                (r) => new Date(r.date).getWeek?.() === new Date().getWeek?.()
-              );
-              const monthRecords = records.filter(
-                (r) => new Date(r.date).getMonth() === new Date().getMonth()
-              );
-              const displayRecords =
-                attendanceView === "daily"
-                  ? records.filter((r) => new Date(r.date).toDateString() === today)
-                  : attendanceView === "weekly"
-                  ? weekRecords
-                  : monthRecords;
-              const progress = getProgress(displayRecords);
-              const expandKey = `${attendanceView}-${course}`;
-              return (
-                <div
-                  key={course}
-                  onClick={() => toggleExpand(expandKey)}
-                  style={{
-                    cursor: "pointer",
-                    background: "#ffffff",
-                    borderRadius: 14,
-                    padding: 12,
-                    marginBottom: 10,
-                    border: "1px solid var(--border-soft)",
-                    boxShadow: "none",
-                    position: "relative",
-                    overflow: "hidden",
-                  }}
-                >
-                  {/* Glow */}
-                  <div
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      background: "transparent",
-                      pointerEvents: "none",
-                    }}
-                  />
-                  {/* HEADER */}
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      marginBottom: 18,
-                    }}
-                  >
-                    <div>
-                      <h3
-                        style={{
-                          margin: 0,
-                          fontSize: 12,
-                          fontWeight: 800,
-                          color: "var(--text-primary)",
-                        }}
-                      >
-                        {formatSubjectName(course)}
-                      </h3>
-                      <p
-                        style={{
-                          margin: "6px 0 0",
-                          fontSize: 10,
-                          color: "var(--text-muted)",
-                        }}
-                      >
-                        {records[0]?.teacherName}
-                      </p>
-                    </div>
-                    <div style={{ fontSize: 11, fontWeight: 900, color: "var(--accent-strong)" }}>
-                      {progress}%
-                    </div>
-                  </div>
-                  {/* PROGRESS BAR */}
-                  <div
-                    onClick={() => toggleExpand(expandKey)}
-                    style={{
-                      height: 8,
-                      background: "var(--surface-strong)",
-                      borderRadius: 999,
-                      cursor: "pointer",
-                      overflow: "hidden",
-                      marginBottom: 10,
-                    }}
-                  >
-                    <div
-                      style={{
-                        height: "100%",
-                        width: `${progress}%`,
-                        background: "var(--accent-strong)",
-                        transition: "width .3s ease",
-                      }}
-                    />
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 10,
-                      fontWeight: 700,
-                      color: "var(--text-secondary)",
-                      marginBottom: 12,
-                    }}
-                  >
-                    Tap to view {attendanceView} details
-                  </div>
-                  {/* EXPANDED DAYS */}
-                  {expandedCards[expandKey] && (
-                    <div
-                      style={{
-                        marginTop: 14,
-                        background: "var(--surface-soft)",
-                        border: "1px solid var(--border-soft)",
-                        borderRadius: 10,
-                        padding: 10,
-                      }}
-                    >
-                      {displayRecords.map((r, i) => (
-                        <div
-                          key={i}
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            padding: "8px 6px",
-                            borderBottom:
-                              i !== displayRecords.length - 1
-                                ? "1px solid var(--border-soft)"
-                                : "none",
-                          }}
-                        >
-                          <div style={{ display: "flex", flexDirection: "column" }}>
-                            <span style={{ fontSize: 10, color: "var(--text-primary)" }}>
-                              {new Date(r.date).toDateString()}
-                            </span>
-                          </div>
-                          <span
-                            style={{
-                              padding: "4px 10px",
-                              borderRadius: 999,
-                              fontSize: 10,
-                              fontWeight: 800,
-                              background:
-                                r.status === "present"
-                                  ? "var(--success-soft)"
-                                  : r.status === "late"
-                                  ? "var(--warning-soft)"
-                                  : "var(--danger-soft)",
-                              color:
-                                r.status === "present"
-                                  ? "var(--success)"
-                                  : r.status === "late"
-                                  ? "var(--warning)"
-                                  : "var(--danger)",
-                            }}
-                          >
-                            {r.status.toUpperCase()}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-        </div>
+        <StudentAttendanceTab
+          attendanceStats={attendanceStats}
+          attendanceView={attendanceView}
+          setAttendanceView={setAttendanceView}
+          attendanceCourseFilter={attendanceCourseFilter}
+          attendanceBySubject={attendanceBySubject}
+          expandedCards={expandedCards}
+          toggleExpand={toggleExpand}
+          getProgress={getProgress}
+          formatSubjectName={formatSubjectName}
+        />
       )}
 
       {/* PERFORMANCE TAB */}
       {studentTab === "performance" && selectedStudent && (
-        <div
-          style={{
-            ...sidebarSectionCardStyle,
-            position: "relative",
-            padding: 14,
-          }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 12 }}>
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.45px" }}>Performance</div>
-              <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 6 }}>Semester scores with clearer course cards.</div>
-            </div>
-          </div>
-          <div
-            style={{
-              display: "flex",
-              gap: "12px",
-              marginBottom: "12px",
-              padding: 4,
-              borderRadius: 999,
-              background: "var(--surface-soft)",
-              border: "1px solid var(--border-soft)",
-            }}
-          >
-            {["semester1", "semester2"].map((sem) => {
-              const isActive = activeSemester === sem;
-              return (
-                <button
-                  key={sem}
-                  onClick={() => setActiveSemester(sem)}
-                  style={{
-                    border: "none",
-                    cursor: "pointer",
-                    fontSize: "11px",
-                    fontWeight: 700,
-                    color: isActive ? "var(--on-accent)" : "var(--text-muted)",
-                    padding: "8px 12px",
-                    borderRadius: 999,
-                    background: isActive ? "var(--text-primary)" : "transparent",
-                  }}
-                >
-                  {sem === "semester1" ? "Semester 1" : "Semester 2"}
-                </button>
-              );
-            })}
-          </div>
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr",
-              gap: "10px",
-            }}
-          >
-            {Object.keys(studentMarksFlattened || {}).length === 0 ? (
-              <div
-                style={{
-                  textAlign: "center",
-                  padding: 12,
-                  borderRadius: 12,
-                  background: "var(--surface-panel)",
-                  color: "var(--text-secondary)",
-                  fontSize: 11,
-                  fontWeight: 600,
-                  border: "1px solid var(--border-soft)",
-                  gridColumn: "1 / -1",
-                }}
-              >
-                No performance records
-              </div>
-            ) : (
-              Object.entries(studentMarksFlattened)
-                .filter(([, studentCourseData]) => Boolean(studentCourseData?.[activeSemester]))
-                .map(([courseKey, studentCourseData], idx) => {
-                  const data = studentCourseData?.[activeSemester];
-                  if (!data) return null;
-
-                  const assessments = data.assessments || {};
-                  const total = Object.values(assessments).reduce((sum, a) => sum + (a.score || 0), 0);
-                  const maxTotal = Object.values(assessments).reduce((sum, a) => sum + (a.max || 0), 0);
-                  const percentage = maxTotal ? (total / maxTotal) * 100 : 0;
-                  const statusClr = percentage >= 75 ? "#16a34a" : percentage >= 50 ? "#f59e0b" : "#dc2626";
-
-                  const courseName = String(courseKey || "")
-                    .replace("course_", "")
-                    .replace(/_/g, " ")
-                    .toUpperCase();
-
-                  const quarterEntriesPreview = Object.entries(data || {})
-                    .filter(([k, v]) => /^(q\d+|quarter\d+|q_\d+)$/i.test(k) && v && typeof v === "object")
-                    .sort((a, b) => {
-                      const toQuarterNum = (value) => {
-                        const m = String(value || "").match(/\d+/);
-                        return m ? Number(m[0]) : 0;
-                      };
-                      return toQuarterNum(a[0]) - toQuarterNum(b[0]);
-                    });
-                  const hasQuarterFormatPreview = quarterEntriesPreview.length > 0;
-
-                  return (
-                    <div
-                      key={`${courseKey}-${idx}`}
-                      style={{
-                        padding: 12,
-                        borderRadius: 12,
-                        background: "var(--surface-panel)",
-                        border: "1px solid var(--border-soft)",
-                        boxShadow: "var(--shadow-soft)",
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: 11,
-                          fontWeight: 800,
-                          marginBottom: 10,
-                          color: "var(--text-primary)",
-                          textAlign: "left",
-                        }}
-                      >
-                        {courseName}
-                      </div>
-
-                      <div style={{ fontSize: 10, fontWeight: 800, marginBottom: 10, color: hasQuarterFormatPreview ? "#1d4ed8" : "#0f766e" }}>
-                        {hasQuarterFormatPreview ? "Format: Quarter-based" : "Format: Semester-based"}
-                      </div>
-
-                      {(() => {
-                        const quarterEntries = quarterEntriesPreview;
-                        const hasQuarterFormat = hasQuarterFormatPreview;
-
-                        const renderQuarterBlock = (quarterKey, qdata) => {
-                          const quarterMatch = String(quarterKey || "").match(/\d+/);
-                          const label = quarterMatch ? `Quarter ${quarterMatch[0]}` : String(quarterKey).toUpperCase();
-
-                          const qAss = qdata?.assessments || qdata || {};
-                          const qTotal = Object.values(qAss).reduce((s, a) => s + (a.score || 0), 0);
-                          const qMax = Object.values(qAss).reduce((s, a) => s + (a.max || 0), 0);
-                          const qPct = qMax ? (qTotal / qMax) * 100 : 0;
-                          const clr = qPct >= 75 ? "#16a34a" : qPct >= 50 ? "#f59e0b" : "#dc2626";
-
-                          return (
-                            <div style={{ flex: 1, minWidth: 0, padding: 8, borderRadius: 8, border: "1px solid #f1f5f9", background: "#fff" }}>
-                              <div style={{ fontSize: 11, fontWeight: 800, color: "#64748b", marginBottom: 8 }}>{label}</div>
-                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                                <div style={{ fontSize: 12, fontWeight: 700 }}>{qTotal} / {qMax}</div>
-                                <div style={{ padding: "3px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800, color: clr, border: "1px solid #e5e7eb" }}>{Math.round(qPct)}%</div>
-                              </div>
-                              <div style={{ height: 6, borderRadius: 999, background: "#e5e7eb", overflow: "hidden", marginBottom: 8 }}>
-                                <div style={{ width: `${Math.max(0, Math.min(100, qPct))}%`, height: "100%", background: clr }} />
-                              </div>
-                              {Object.entries(qAss).length === 0 ? (
-                                <div style={{ color: "#8b8f95", fontSize: 12 }}>No marks</div>
-                              ) : (
-                                Object.entries(qAss).map(([k, a]) => (
-                                  <div key={k} style={{ marginBottom: 8 }}>
-                                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontWeight: 600, color: "#111827" }}>
-                                      <span>{a.name || k}</span>
-                                      <span>{(a.score === "" || a.score === null || a.score === undefined || a.score === 0) ? "-" : a.score} / {a.max}</span>
-                                    </div>
-                                  </div>
-                                ))
-                              )}
-                            </div>
-                          );
-                        };
-
-                        if (hasQuarterFormat) {
-                          return (
-                            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
-                              {quarterEntries.map(([quarterKey, quarterData]) => (
-                                <React.Fragment key={quarterKey}>
-                                  {renderQuarterBlock(quarterKey, quarterData)}
-                                </React.Fragment>
-                              ))}
-                            </div>
-                          );
-                        }
-
-                        return (
-                          <>
-                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                              <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600 }}>Total</div>
-                              <div style={{ fontSize: 11, fontWeight: 800, color: "#111827" }}>{total} / {maxTotal}</div>
-                              <div style={{ padding: "3px 8px", borderRadius: 999, fontSize: 10, fontWeight: 800, border: "1px solid #e5e7eb", color: statusClr, background: "#ffffff" }}>{Math.round(percentage)}%</div>
-                            </div>
-                            <div style={{ height: 8, borderRadius: 999, background: "#e5e7eb", overflow: "hidden", marginBottom: 12 }}>
-                              <div style={{ width: `${Math.max(0, Math.min(100, percentage))}%`, height: "100%", background: statusClr }} />
-                            </div>
-                            {Object.entries(assessments).map(([key, a]) => (
-                              <div key={key} style={{ marginBottom: 8 }}>
-                                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontWeight: 600, color: "#111827" }}>
-                                  <span>{a.name}</span>
-                                  <span>{(a.score === "" || a.score === null || a.score === undefined || a.score === 0) ? "-" : a.score} / {a.max}</span>
-                                </div>
-                              </div>
-                            ))}
-                            <div style={{ marginTop: 8, textAlign: "left", fontWeight: 700, fontSize: 10, color: statusClr }}>
-                              {percentage >= 75 ? "Excellent" : percentage >= 50 ? "Good" : "Needs Improvement"}
-                            </div>
-                            <div style={{ marginTop: 6, textAlign: "left", fontSize: 10, color: "#64748b" }}>
-                              {studentCourseData.teacherName || data.teacherName || "N/A"}
-                            </div>
-                          </>
-                        );
-                      })()}
-                    </div>
-                  );
-                })
-            )}
-          </div>
-        </div>
+        <StudentPerformanceTab
+          studentMarksFlattened={studentMarksFlattened}
+          activeSemester={activeSemester}
+          setActiveSemester={setActiveSemester}
+        />
       )}
 
       {/* PAYMENT TAB: Read-only monthly payment history */}
       {studentTab === "payment" && (
-        <div
-          style={{
-            ...sidebarSectionCardStyle,
-            position: "relative",
-            padding: 14,
-          }}
-        >
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.45px" }}>Payments</div>
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 6 }}>Monthly payment status in a simpler list.</div>
-          </div>
-
-          {!selectedStudent ? (
-            <p style={{ textAlign: "center", color: "var(--text-muted)" }}>Select a student to view payment history.</p>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {Object.keys(paymentHistory).length === 0 ? (
-                <p style={{ textAlign: "center", color: "var(--text-muted)" }}>Loading payment history...</p>
-              ) : (
-                Object.entries(paymentHistory).map(([monthKey, paid]) => {
-                  const [year, monthShort] = monthKey.split("-");
-                  return (
-                    <div
-                      key={monthKey}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        padding: "10px 12px",
-                        borderRadius: 12,
-                        background: paid ? "var(--success-soft)" : "var(--danger-soft)",
-                        border: paid ? "1px solid var(--success)" : "1px solid var(--danger)",
-                      }}
-                    >
-                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <div style={{ width: 10, height: 10, borderRadius: 999, background: paid ? "var(--success)" : "var(--danger)" }} />
-                        <div style={{ fontWeight: 700 }}>{monthShort} {year}</div>
-                      </div>
-                      <div style={{ fontWeight: 800, color: paid ? "var(--success)" : "var(--danger)" }}>{paid ? "Paid" : "Unpaid"}</div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          )}
-        </div>
+        <StudentPaymentTab
+          selectedStudent={selectedStudent}
+          paymentHistory={paymentHistory}
+        />
       )}
     </div>
     {/* Parent Chat Button */}
@@ -2665,7 +2211,7 @@ function StudentsPage() {
                 fontSize: "18px",
               }}
             >
-              â¤¢
+              <FaExpand />
             </button>
             {/* Close */}
             <button
@@ -2677,7 +2223,7 @@ function StudentsPage() {
                 cursor: "pointer",
               }}
             >
-              Ã—
+              <FaTimes />
             </button>
           </div>
         </div>

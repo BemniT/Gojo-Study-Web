@@ -13,8 +13,11 @@ const normalizeCourseToken = (value) =>
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
 
+// DB convention: `course_{subject_key}_{grade}{SECTION}` (e.g. course_general_science_8A).
+// The subject token is already lowercased + underscored by normalizeCourseToken;
+// the grade stays as a plain digit; the section must stay UPPERCASE.
 const buildGeneratedCourseId = (gradeValue, sectionValue, subjectToken) =>
-  `gm_${normalizeCourseToken(gradeValue)}_${normalizeCourseToken(sectionValue)}_${normalizeCourseToken(subjectToken)}`;
+  `course_${normalizeCourseToken(subjectToken)}_${String(gradeValue || "").trim()}${String(sectionValue || "").trim().toUpperCase()}`;
 
 const normalizeGradeSubjectEntries = (subjectsNode) => {
   if (Array.isArray(subjectsNode)) {
