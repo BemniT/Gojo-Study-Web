@@ -1,20 +1,11 @@
-import React, { useEffect, useRef, useState } from "react";
+﻿import React, { useEffect, useRef, useState } from "react";
 import axios from "axios";
-import { Link, useNavigate } from "react-router-dom";
-import {
-  FaHome,
-  FaSignOutAlt,
-  FaSave,
-  FaClipboardCheck,
-  FaUsers,
-  FaChalkboardTeacher,
-   FaUserCheck,
-  FaCalendarAlt,
-  FaBookOpen
-} from "react-icons/fa";
+import { useNavigate } from "react-router-dom";
 import Sidebar from "./Sidebar";
-import ProfileAvatar from "./ProfileAvatar";
 import "../styles/global.css";
+import AttendanceControls from "./attendance/AttendanceControls";
+import AttendanceTable from "./attendance/AttendanceTable";
+import styles from "./attendance/AttendancePage.module.css";
 import { API_BASE } from "../api/apiConfig";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 import { getTeacherCourseContext } from "../api/teacherApi";
@@ -601,7 +592,7 @@ export default function AttendancePage() {
   }, []);
 
   const selectedCourseLabel = selectedCourse
-    ? `${selectedCourse.subject || selectedCourse.name || "Course"} • Grade ${selectedCourse.grade} Section ${selectedCourse.section}`
+    ? `${selectedCourse.subject || selectedCourse.name || "Course"} ΓÇó Grade ${selectedCourse.grade} Section ${selectedCourse.section}`
     : "No course selected";
 
   const getStatusButtonStyle = (studentId, statusType) => {
@@ -746,8 +737,8 @@ export default function AttendancePage() {
             scrollPaddingBottom: 32,
           }}
         >
-          <div className="main-inner" style={{ padding: isMobile ? "10px 2vw 64px" : "16px 18px 72px", width: "100%", maxWidth: 1500, margin: 0 }}>
-            <div className="section-header-card" style={{ marginBottom: 14, background: "#ffffff", border: "1px solid #dbeafe", boxShadow: "0 14px 30px rgba(37, 99, 235, 0.10)" }}>
+          <div className={`main-inner ${styles.mainInner}`} style={{ padding: isMobile ? "10px 2vw 64px" : "16px 18px 72px" }}>
+            <div className={`section-header-card ${styles.headerCard}`}>
               <h2 className="section-header-card__title" style={{ fontSize: 24 }}>Attendance</h2>
               <div className="section-header-card__meta">
                 <span style={headerMetaPillStyle}>{students.length} Students</span>
@@ -757,335 +748,34 @@ export default function AttendancePage() {
               </div>
             </div>
 
-            <div
-              style={{
-                marginBottom: 14,
-                background: "linear-gradient(135deg, #eff6ff, #f8fafc)",
-                border: "1px solid var(--border-soft)",
-                borderRadius: 14,
-                padding: isMobile ? "10px 12px" : "12px 14px",
-                display: "flex",
-                flexWrap: "wrap",
-                gap: "8px",
-                alignItems: "center",
-              }}
-            >
-              <span style={{ fontWeight: 800, color: "var(--text-secondary)", fontSize: 12, letterSpacing: "0.02em" }}>ACTIVE COURSE</span>
-              <span
-                style={{
-                  background: "#ffffff",
-                  border: "1px solid #dbeafe",
-                  color: "var(--text-primary)",
-                  borderRadius: 999,
-                  padding: "6px 11px",
-                  fontWeight: 700,
-                  fontSize: 12,
-                }}
-              >
-                {selectedCourseLabel}
-              </span>
+            <AttendanceControls
+              isMobile={isMobile}
+              selectedCourseLabel={selectedCourseLabel}
+              autoSaveEnabled={autoSaveEnabled}
+              setAutoSaveEnabled={setAutoSaveEnabled}
+              manualModeSwitchLocked={manualModeSwitchLocked}
+              manualModeSwitchMessage={manualModeSwitchMessage}
+              selectedCourse={selectedCourse}
+              courses={courses}
+              setSelectedCourseId={setSelectedCourseId}
+              date={date}
+              setDate={setDate}
+              prepareAttendanceContextSwitch={prepareAttendanceContextSwitch}
+              ATTENDANCE_AUTOSAVE_DELAY_MS={ATTENDANCE_AUTOSAVE_DELAY_MS}
+            />
 
-              <div
-                style={{
-                  marginLeft: "auto",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 10,
-                  background: "#ffffff",
-                  border: "1px solid #dbeafe",
-                  borderRadius: 999,
-                  padding: "6px 8px 6px 12px",
-                }}
-              >
-                <span style={{ fontWeight: 800, color: "#334155", fontSize: 12, whiteSpace: "nowrap" }}>
-                  Auto Save {autoSaveEnabled ? "On" : "Off"}
-                </span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={autoSaveEnabled}
-                  onClick={() => setAutoSaveEnabled((prev) => !prev)}
-                  style={{
-                    position: "relative",
-                    width: 52,
-                    height: 30,
-                    borderRadius: 999,
-                    border: autoSaveEnabled ? "1px solid #007AFB" : "1px solid #cbd5e1",
-                    background: autoSaveEnabled ? "#007AFB" : "#e2e8f0",
-                    cursor: "pointer",
-                    transition: "all 0.2s ease",
-                    padding: 0,
-                    flexShrink: 0,
-                  }}
-                >
-                  <span
-                    aria-hidden="true"
-                    style={{
-                      position: "absolute",
-                      top: 3,
-                      left: autoSaveEnabled ? 25 : 3,
-                      width: 22,
-                      height: 22,
-                      borderRadius: "50%",
-                      background: "#ffffff",
-                      boxShadow: "0 4px 10px rgba(15, 23, 42, 0.16)",
-                      transition: "left 0.2s ease",
-                    }}
-                  />
-                </button>
-              </div>
-            </div>
+            <AttendanceTable
+              loading={loading}
+              error={error}
+              selectedCourse={selectedCourse}
+              students={students}
+              handleMark={handleMark}
+              getStatusButtonStyle={getStatusButtonStyle}
+              isMobile={isMobile}
+            />
 
-            <div
-              style={{
-                marginBottom: "14px",
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                background: "var(--surface-panel)",
-                border: "1px solid var(--border-soft)",
-                boxShadow: "var(--shadow-soft)",
-                borderRadius: 14,
-                padding: isMobile ? "12px" : "14px 16px",
-                flexWrap: "wrap",
-              }}
-            >
-              <label style={{ fontWeight: 700, color: "var(--text-secondary)", fontSize: 13 }}>Select Course:</label>
-              <select
-                value={selectedCourse?.id || ""}
-                disabled={manualModeSwitchLocked}
-                onChange={async (e) => {
-                  const nextCourseId = e.target.value;
-                  const didContinue = await prepareAttendanceContextSwitch();
-                  if (!didContinue) return;
-                  setSelectedCourseId(nextCourseId);
-                }}
-                style={{
-                  padding: "9px 12px",
-                  borderRadius: 10,
-                  border: "1px solid var(--border-strong)",
-                  outline: "none",
-                  background: "#f8fafc",
-                  minWidth: isMobile ? "100%" : "280px",
-                  fontSize: 13,
-                  fontWeight: 600,
-                  color: "var(--text-primary)",
-                  opacity: manualModeSwitchLocked ? 0.75 : 1,
-                  cursor: manualModeSwitchLocked ? "not-allowed" : "pointer",
-                }}
-              >
-                <option value="">-- Select Course --</option>
-                {courses.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {(c.subject || c.name || "Course")} - Grade {c.grade} Section {c.section}
-                  </option>
-                ))}
-              </select>
-
-              <label style={{ fontWeight: 700, color: "var(--text-secondary)", fontSize: 13 }}>Date:</label>
-              <input
-                type="date"
-                value={date}
-                disabled={manualModeSwitchLocked}
-                onChange={async (e) => {
-                  const nextDate = e.target.value;
-                  const didContinue = await prepareAttendanceContextSwitch();
-                  if (!didContinue) return;
-                  setDate(nextDate);
-                }}
-                style={{
-                  padding: "9px 12px",
-                  borderRadius: 10,
-                  border: "1px solid var(--border-strong)",
-                  outline: "none",
-                  background: "#f8fafc",
-                  color: "var(--text-primary)",
-                  fontWeight: 600,
-                  opacity: manualModeSwitchLocked ? 0.75 : 1,
-                  cursor: manualModeSwitchLocked ? "not-allowed" : "pointer",
-                }}
-              />
-
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  padding: "8px 12px",
-                  borderRadius: 999,
-                  background: autoSaveEnabled ? "#eff6ff" : "#f8fafc",
-                  border: autoSaveEnabled ? "1px solid #bfdbfe" : "1px solid #e2e8f0",
-                  color: autoSaveEnabled ? "#1d4ed8" : "#475569",
-                  fontWeight: 700,
-                  fontSize: 12,
-                }}
-              >
-                {autoSaveEnabled
-                  ? `Changes save automatically after ${ATTENDANCE_AUTOSAVE_DELAY_MS / 1000}s.`
-                  : "Auto-save is off. Use Save Attendance to keep your updates."}
-              </span>
-
-              {manualModeSwitchLocked && (
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    padding: "8px 12px",
-                    borderRadius: 999,
-                    background: "#fff7ed",
-                    border: "1px solid #fdba74",
-                    color: "#9a3412",
-                    fontWeight: 700,
-                    fontSize: 12,
-                  }}
-                >
-                  {manualModeSwitchMessage}
-                </span>
-              )}
-            </div>
-
-            <div
-              className="attendance-table-wrapper"
-              style={{
-                width: "100%",
-                maxWidth: "100%",
-                overflowX: "auto",
-                marginBottom: 20,
-                background: "var(--surface-panel)",
-                borderRadius: 14,
-                border: "1px solid var(--border-soft)",
-                boxShadow: "var(--shadow-soft)",
-                padding: isMobile ? 8 : 10,
-              }}
-            >
-              {loading ? (
-                <p style={{ margin: 0, padding: 10, color: "var(--text-muted)" }}>Loading students...</p>
-              ) : error ? (
-                <p style={{ margin: 0, padding: 10, color: "#b91c1c" }}>{error}</p>
-              ) : selectedCourse && students.length === 0 ? (
-                <p style={{ margin: 0, padding: 10, color: "var(--text-muted)" }}>
-                  No students are assigned to Grade {selectedCourse.grade} Section {selectedCourse.section} yet.
-                </p>
-              ) : (
-                <table
-                  className="attendance-table"
-                  style={{
-                    width: "100%",
-                    borderCollapse: "collapse",
-                    background: "var(--surface-panel)",
-                    minWidth: 720,
-                    borderRadius: 12,
-                  }}
-                >
-                  <thead>
-                    <tr style={{ borderRadius:"199px",background: "var(--accent-strong)", fontWeight: "bold", color: "#fff", textAlign: "left" }}>
-                      <th style={{
-                        //  padding: "12px", textAlign: "center", width: 56 ,borderRadius: "16px 0 0 16px",
-                         padding: "12px 8px",
-                          textAlign: "center",
-                          background: "rgba(255,255,255,0.05)",
-                          width: 48,
-                          minWidth: 48,
-                          maxWidth: 48,
-                          whiteSpace: 'nowrap',
-                          borderRadius: "16px 0 0 16px",
-                          verticalAlign: "middle",
-                      }}>NO</th>
-                      <th style={{ padding: "12px" }}>Student</th>
-                      <th style={{ padding: "12px", textAlign: "center" }}>Present</th>
-                      <th style={{ padding: "12px", textAlign: "center" }}>Absent</th>
-                      <th style={{ padding: "12px", textAlign: "center" , 
-                        borderRadius: "0 16px 16px 0",
-                      }}>Late</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {students.map((s, idx) => (
-                      <tr
-                        key={s.studentId}
-                        style={{
-                          background: idx % 2 === 0 ? "#ffffff" : "#f8fafc",
-                          borderBottom: "1px solid var(--border-soft)",
-                          transition: "background 0.2s",
-                        }}
-                        onMouseEnter={(e) => (e.currentTarget.style.background = "#e0e7ff")}
-                        onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 0 ? "#ffffff" : "#f8fafc")}
-                      >
-                        <td style={{ padding: "12px", textAlign: "center", fontWeight: 700 }}>
-                          <div
-                            style={{
-                              width: 34,
-                              height: 34,
-                              borderRadius: "50%",
-                              background: "#f1f5f9",
-                              display: "inline-flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              fontWeight: 800,
-                              color: "#374151",
-                            }}
-                          >
-                            {idx + 1}
-                          </div>
-                        </td>
-
-                        <td style={{ padding: "12px", display: "flex", alignItems: "center", gap: "12px" }}>
-                          <div style={{ width: "40px", height: "40px", borderRadius: "50%", overflow: "hidden", border: "2px solid #4b6cb7", background: "#fff" }}>
-                            <ProfileAvatar
-                              src={s.profileImage}
-                              name={s.name}
-                              alt={s.name}
-                              style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                            />
-                          </div>
-                          <span style={{ fontWeight: 700, color: "var(--text-primary)" }}>{s.name}</span>
-                        </td>
-
-                        <td style={{ padding: "10px", textAlign: "center" }}>
-                          <button
-                            style={getStatusButtonStyle(s.studentId, "present")}
-                            onClick={() => handleMark(s.studentId, "present")}
-                          >
-                            Present
-                          </button>
-                        </td>
-                        <td style={{ padding: "10px", textAlign: "center" }}>
-                          <button
-                            style={getStatusButtonStyle(s.studentId, "absent")}
-                            onClick={() => handleMark(s.studentId, "absent")}
-                          >
-                            Absent
-                          </button>
-                        </td>
-                        <td style={{ padding: "10px", textAlign: "center" }}>
-                          <button
-                            style={getStatusButtonStyle(s.studentId, "late")}
-                            onClick={() => handleMark(s.studentId, "late")}
-                          >
-                            Late
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                gap: 12,
-                flexWrap: "wrap",
-                background: "var(--surface-panel)",
-                border: "1px solid var(--border-soft)",
-                borderRadius: 12,
-                padding: "10px 12px",
-                boxShadow: "0 6px 16px rgba(15, 23, 42, 0.06)",
-              }}
-            >
-              <span style={{ color: "var(--text-muted)", fontWeight: 600, fontSize: 12 }}>
+            <div className={styles.footerCard}>
+              <span className={styles.footerText}>
                 {autoSaveEnabled
                   ? hasUnsavedChanges
                     ? "Attendance changes will save automatically unless auto-save is turned off."
@@ -1093,16 +783,9 @@ export default function AttendancePage() {
                   : "Mark attendance and use Save Attendance when you are ready."}
               </span>
               <button
+                className={styles.saveBtn}
                 style={{
-                  padding: "11px 18px",
-                  borderRadius: "999px",
-                  background: "var(--accent-strong)",
-                  color: "#fff",
-                  fontWeight: "700",
-                  border: "none",
                   cursor: saveState === "saving" ? "default" : "pointer",
-                  boxShadow: "0 10px 22px rgba(29, 78, 216, 0.26)",
-                  letterSpacing: "0.01em",
                   opacity: saveState === "saving" ? 0.72 : 1,
                 }}
                 disabled={saveState === "saving"}

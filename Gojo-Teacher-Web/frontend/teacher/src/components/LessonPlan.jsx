@@ -1,13 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
-import { FaBookOpen, FaFileExcel, FaFilePdf, FaFilter } from "react-icons/fa";
 import Sidebar from "./Sidebar";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
 import { getTeacherCourseContext } from "../api/teacherApi";
 import { fetchAcademicYearsNode } from "../utils/teacherData";
 import LessonPlanTable from "./lessonPlan/LessonPlanTable";
 import DailyLogsPanel from "./lessonPlan/DailyLogsPanel";
+import LessonPlanHeader from "./lessonPlan/LessonPlanHeader";
+import LessonPlanControls from "./lessonPlan/LessonPlanControls";
+import LessonPlanAnnualHeader from "./lessonPlan/LessonPlanAnnualHeader";
+import styles from "./lessonPlan/LessonPlan.module.css";
 import { ETHIOPIAN_MONTHS, useLessonPlanData } from "./lessonPlan/useLessonPlanData";
 import "./lessonPlan/lessonPlan.css";
 
@@ -514,8 +517,8 @@ function LessonPlan() {
 	if (!teacher) return null;
 
 	return (
-		<div className="dashboard-page lesson-plan-page">
-			<div className="google-dashboard lesson-plan-shell">
+		<div className={styles.page}>
+			<div className={styles.shellWrap}>
 				<Sidebar
 					active="lesson-plan"
 					sidebarOpen={leftSidebarOpen}
@@ -524,194 +527,78 @@ function LessonPlan() {
 					handleLogout={handleLogout}
 				/>
 
-				<div
-					className="teacher-sidebar-spacer"
-					style={{
-						width: "var(--sidebar-width, clamp(230px, 16vw, 290px))",
-						minWidth: "var(--sidebar-width, clamp(230px, 16vw, 290px))",
-						flex: "0 0 var(--sidebar-width, clamp(230px, 16vw, 290px))",
-						pointerEvents: "none",
-						background: "#ffffff",
-					}}
-				/>
+				<div className={styles.sidebarSpacer} />
 
-				<main className="lesson-plan-main" style={{ background: "#ffffff" }}>
-					<section className="lp-card lp-header">
-						<div>
-							<h1 className="lp-title">Lessons Planning Studio</h1>
-							<p className="lp-subtitle">
-								Professional weekly planning built on AssessmentTemplates, LessonPlans, LessonDailyLogs, and LessonSubmissions.
-							</p>
-							<div className="lp-context-strip">
-								{selectedCourse?.subject ? <span className="lp-context-pill">Course: {selectedCourse.subject}</span> : null}
-								{selectedCourse?.grade ? <span className="lp-context-pill">Grade {selectedCourse.grade}</span> : null}
-								{selectedCourse?.section ? <span className="lp-context-pill">Section {selectedCourse.section}</span> : null}
-								{/* {academicYear ? <span className="lp-context-pill">Year: {academicYear}</span> : null} */}
-							</div>
-							<div className="lp-metrics">
-								<span className="lp-chip"><FaBookOpen /> Week Rows: {weeks.length}</span>
-								{/* <span className="lp-chip"><FaCalendarAlt /> Submitted: {totalSubmitted}/{totalExpected || 0}</span> */}
-								<span className="lp-chip"><FaFilter /> Semester: {selectedSemesterId || "-"}</span>
-							</div>
-							<div className="lp-summary-row">
-								<div className="lp-summary-card">
-									<div className="lp-summary-label">Expected Days</div>
-									<div className="lp-summary-value">{totalExpected}</div>
-								</div>
-								<div className="lp-summary-card">
-									<div className="lp-summary-label">Submitted Days</div>
-									<div className="lp-summary-value">{totalSubmitted}</div>
-								</div>
-								<div className="lp-summary-card">
-									<div className="lp-summary-label">Pending Weeks</div>
-									<div className="lp-summary-value">{pendingWeeks}</div>
-								</div>
-							</div>
-							<div className="lp-save-strip">
-								<span className="lp-save-pill" style={saveStatusStyle}>{saveStatusText}</span>
-								<button
-									type="button"
-									className={`lp-toggle-button ${autoSaveEnabled ? "is-on" : "is-off"}`}
-									onClick={() => setAutoSaveEnabled((previousValue) => !previousValue)}
-								>
-									<span className="lp-toggle-track">
-										<span className="lp-toggle-thumb" />
-									</span>
-									<span>{autoSaveEnabled ? "Auto Save On" : "Auto Save Off"}</span>
-								</button>
-							</div>
-							<p className="lp-helper-copy">{saveHelperText}</p>
-						</div>
+				<main className={styles.main} style={{ background: "#ffffff" }}>
+					<div className={styles.shell}>
+						<LessonPlanHeader
+							selectedCourse={selectedCourse}
+							weeks={weeks}
+							selectedSemesterId={selectedSemesterId}
+							totalExpected={totalExpected}
+							totalSubmitted={totalSubmitted}
+							pendingWeeks={pendingWeeks}
+							saveStatusStyle={saveStatusStyle}
+							saveStatusText={saveStatusText}
+							autoSaveEnabled={autoSaveEnabled}
+							setAutoSaveEnabled={setAutoSaveEnabled}
+							saveHelperText={saveHelperText}
+						/>
 
-						<div className="lp-controls">
-							<label>
-								Academic Year
-								<select value={academicYear} onChange={async (event) => {
-									const nextYear = event.target.value;
-									if (nextYear === academicYear) return;
-									const canSwitch = await flushPendingDrafts();
-									if (canSwitch === false) return;
-									setAcademicYear(nextYear);
-									setPanelOpen(false);
-									setActiveWeek(null);
-								}}>
-									<option value="">Select year</option>
-									{academicYearOptions.map((year) => (
-										<option key={year} value={year}>{year}</option>
-									))}
-								</select>
-							</label>
-
-							<label>
-								Course
-								<select
-									value={selectedCourseId}
-									onChange={async (event) => {
-										const nextCourseId = event.target.value;
-										if (nextCourseId === selectedCourseId) return;
-										const canSwitch = await flushPendingDrafts();
-										if (canSwitch === false) return;
-										setSelectedCourseId(nextCourseId);
-										setPanelOpen(false);
-										setActiveWeek(null);
-									}}
-									disabled={coursesLoading}
-								>
-									<option value="">{coursesLoading ? "Loading courses..." : "Select course"}</option>
-									{courses.map((course) => (
-										<option key={course.id} value={course.id}>
-											{(course.subject || course.name || course.id)} {course.grade ? `- G${course.grade}` : ""}{course.section ? `${course.section}` : ""}
-										</option>
-									))}
-								</select>
-							</label>
-
-							<label>
-								Semester
-								<select value={selectedSemesterId} onChange={async (event) => {
-									const nextSemesterId = event.target.value;
-									if (nextSemesterId === selectedSemesterId) return;
-									const canSwitch = await flushPendingDrafts();
-									if (canSwitch === false) return;
-									setSelectedSemesterId(nextSemesterId);
-									setPanelOpen(false);
-									setActiveWeek(null);
-								}}>
-									{semesterIds.map((semesterId) => (
-										<option key={semesterId} value={semesterId}>{semesterId}</option>
-									))}
-								</select>
-							</label>
-
-							<label>
-								Month
-								<select value={newMonthId} onChange={(event) => setNewMonthId(event.target.value)}>
-									{ETHIOPIAN_MONTHS.map((monthId) => (
-										<option key={monthId} value={monthId}>{monthId}</option>
-									))}
-								</select>
-							</label>
-
-							<label>
-								Week
-								<select value={newWeekId} onChange={(event) => setNewWeekId(event.target.value)}>
-									<option value="W1">W1</option>
-									<option value="W2">W2</option>
-									<option value="W3">W3</option>
-									<option value="W4">W4</option>
-								</select>
-							</label>
-
-							<label>
-								Expected Days
-								<input type="number" min={1} max={7} value={newExpectedDays} onChange={(event) => setNewExpectedDays(Number(event.target.value || 5))} />
-							</label>
-
-							<label>
-								Create Plan
-								<button className="lp-btn primary" onClick={handleCreateWeekPlan} disabled={saving || !selectedCourseId}>
-									Add Week Plan
-								</button>
-							</label>
-						</div>
-					</section>
+						<LessonPlanControls
+							academicYear={academicYear}
+							setAcademicYear={setAcademicYear}
+							academicYearOptions={academicYearOptions}
+							selectedCourseId={selectedCourseId}
+							setSelectedCourseId={setSelectedCourseId}
+							coursesLoading={coursesLoading}
+							courses={courses}
+							selectedSemesterId={selectedSemesterId}
+							setSelectedSemesterId={setSelectedSemesterId}
+							semesterIds={semesterIds}
+							newMonthId={newMonthId}
+							setNewMonthId={setNewMonthId}
+							newWeekId={newWeekId}
+							setNewWeekId={setNewWeekId}
+							newExpectedDays={newExpectedDays}
+							setNewExpectedDays={setNewExpectedDays}
+							saving={saving}
+							handleCreateWeekPlan={handleCreateWeekPlan}
+							flushPendingDrafts={flushPendingDrafts}
+							setPanelOpen={setPanelOpen}
+							setActiveWeek={setActiveWeek}
+						/>
+					</div>
 
 					{error ? <div className="lp-empty">{error}</div> : null}
 
-					<section className="lp-card lp-section-heading">
-						<div>
-							<div className="lp-section-kicker">Annual Plan</div>
-							<h2 className="lp-section-title">Annual Plan Overview</h2>
-							<p className="lp-section-subtitle">Added months and weeks stay here, and you can export the full annual plan to Excel or PDF.</p>
-						</div>
-						<div className="lp-export-toolbar">
-							<button className="lp-btn ghost" onClick={exportAnnualPlanExcel} disabled={!annualExportRows.length}>
-								<FaFileExcel /> Annual Excel
-							</button>
-							<button className="lp-btn ghost" onClick={exportAnnualPlanPdf} disabled={!annualExportRows.length}>
-								<FaFilePdf /> Annual PDF
-							</button>
-						</div>
-					</section>
+					<div className={styles.shell}>
+						<LessonPlanAnnualHeader
+							exportAnnualPlanExcel={exportAnnualPlanExcel}
+							exportAnnualPlanPdf={exportAnnualPlanPdf}
+							hasRows={Boolean(annualExportRows.length)}
+						/>
 
-					<LessonPlanTable
-						ref={annualTableRef}
-						rows={weeks}
-						loading={loading}
-						saving={saving}
-						autoSaveEnabled={autoSaveEnabled}
-						autoSaveDelayMs={LESSON_PLAN_AUTOSAVE_DELAY_MS}
-						onSaveRow={updateWeekPlan}
-						onSaveRows={saveWeekPlans}
-						onOpenWeek={(week) => openWeekPanel(week, false)}
-						onQuickAddToday={(week) => openWeekPanel(week, true)}
-						onCompleteWeek={handleCompleteWeek}
-						onDeleteWeek={handleDeleteWeek}
-						onDirtyCountChange={setAnnualDirtyCount}
-						onSaveMetaChange={setAnnualSaveMeta}
-					/>
-				</main>
-			</div>
+						<LessonPlanTable
+							ref={annualTableRef}
+							rows={weeks}
+							loading={loading}
+							saving={saving}
+							autoSaveEnabled={autoSaveEnabled}
+							autoSaveDelayMs={LESSON_PLAN_AUTOSAVE_DELAY_MS}
+							onSaveRow={updateWeekPlan}
+							onSaveRows={saveWeekPlans}
+							onOpenWeek={(week) => openWeekPanel(week, false)}
+							onQuickAddToday={(week) => openWeekPanel(week, true)}
+							onCompleteWeek={handleCompleteWeek}
+							onDeleteWeek={handleDeleteWeek}
+							onDirtyCountChange={setAnnualDirtyCount}
+							onSaveMetaChange={setAnnualSaveMeta}
+						/>
+					</div>
+
+					</main>
+				</div>
 
 			<DailyLogsPanel
 				ref={dailyLogsPanelRef}

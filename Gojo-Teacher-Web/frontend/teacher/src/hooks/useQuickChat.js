@@ -8,7 +8,7 @@ import {
   filterChatMessageRows,
   getLastChatMessageKey,
 } from "../utils/chatRtdb";
-import { mergeChatMessages } from "../utils/chatHelpers";
+import { getChatIdForTab, mergeChatMessages } from "../utils/chatHelpers";
 import {
   getChatId,
   buildQuickChatMessageRows,
@@ -23,7 +23,7 @@ const QUICK_CHAT_IDLE_GRACE_MS = 2 * 60 * 1000;
 
 const normalizeIdentifier = (value) => String(value || "").trim();
 
-export function useQuickChat({ teacherUserId, resolvedSchoolCode, rtdbBase }) {
+export function useQuickChat({ teacherUserId, resolvedSchoolCode, rtdbBase, chatTab = "student" }) {
   const [liveQuickChatMessages, setLiveQuickChatMessages] = useState([]);
   const [olderQuickChatMessages, setOlderQuickChatMessages] = useState([]);
   const [newMessageText, setNewMessageText] = useState("");
@@ -40,6 +40,18 @@ export function useQuickChat({ teacherUserId, resolvedSchoolCode, rtdbBase }) {
   const buildRtdbUrl = useCallback(
     (path) => `${rtdbBase}/${String(path || "").replace(/^\/+/, "")}.json`,
     [rtdbBase]
+  );
+
+  const resolveChatId = useCallback(
+    (otherUserId) => {
+      if (!teacherUserId || !otherUserId) return "";
+      const normalizedTab = String(chatTab || "student").toLowerCase();
+      if (normalizedTab === "admin" || normalizedTab === "admins") {
+        return getChatIdForTab("admin", teacherUserId, otherUserId);
+      }
+      return getChatId(teacherUserId, otherUserId);
+    },
+    [chatTab, teacherUserId]
   );
 
   const fetchQuickChatMessagesPage = useCallback(
@@ -162,7 +174,7 @@ export function useQuickChat({ teacherUserId, resolvedSchoolCode, rtdbBase }) {
       return undefined;
     }
 
-    const chatKey = getChatId(teacherUserId, quickChatTarget.userId);
+    const chatKey = resolveChatId(quickChatTarget.userId);
 
     setQuickChatLoading(true);
     lastQuickChatMessageKeyRef.current = "";
@@ -306,7 +318,7 @@ export function useQuickChat({ teacherUserId, resolvedSchoolCode, rtdbBase }) {
       window.removeEventListener("online", handleFocusedRefresh);
       document.removeEventListener("visibilitychange", handleFocusedRefresh);
     };
-  }, [quickChatTarget?.userId, teacherUserId, rtdbBase, resolvedSchoolCode, buildRtdbUrl, fetchQuickChatMessagesPage, patchQuickChatSummary, syncQuickChatSummaryCache]);
+  }, [quickChatTarget?.userId, teacherUserId, rtdbBase, resolvedSchoolCode, buildRtdbUrl, fetchQuickChatMessagesPage, patchQuickChatSummary, syncQuickChatSummaryCache, resolveChatId]);
 
   const loadOlderMessages = useCallback(async () => {
     if (
@@ -336,7 +348,7 @@ export function useQuickChat({ teacherUserId, resolvedSchoolCode, rtdbBase }) {
     setQuickChatLoadingOlder(true);
 
     try {
-      const chatId = getChatId(teacherUserId, quickChatTarget.userId);
+      const chatId = resolveChatId(quickChatTarget.userId);
       const { messages: olderMessagesPage } = await fetchQuickChatMessagesPage({
         chatId,
         beforeMessageKey: oldestMessageKey,
@@ -358,7 +370,7 @@ export function useQuickChat({ teacherUserId, resolvedSchoolCode, rtdbBase }) {
     } finally {
       setQuickChatLoadingOlder(false);
     }
-  }, [quickChatLoading, quickChatLoadingOlder, teacherUserId, quickChatTarget?.userId, messages, fetchQuickChatMessagesPage]);
+  }, [quickChatLoading, quickChatLoadingOlder, teacherUserId, quickChatTarget?.userId, messages, fetchQuickChatMessagesPage, resolveChatId]);
 
   const sendMessage = useCallback(async () => {
     const text = String(newMessageText || "").trim();
@@ -366,7 +378,7 @@ export function useQuickChat({ teacherUserId, resolvedSchoolCode, rtdbBase }) {
 
     const senderId = teacherUserId;
     const receiverId = quickChatTarget.userId;
-    const chatId = getChatId(senderId, receiverId);
+    const chatId = resolveChatId(receiverId);
     const timeStamp = Date.now();
 
     const message = {
@@ -433,7 +445,7 @@ export function useQuickChat({ teacherUserId, resolvedSchoolCode, rtdbBase }) {
     } catch (err) {
       console.error("Failed to send quick chat message:", err);
     }
-  }, [newMessageText, quickChatTarget?.userId, teacherUserId, syncQuickChatSummaryCache]);
+  }, [newMessageText, quickChatTarget?.userId, teacherUserId, syncQuickChatSummaryCache, resolveChatId]);
 
   return {
     quickChatTarget,

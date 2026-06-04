@@ -15,6 +15,9 @@ import {
 } from "react-icons/fa";
 import Sidebar from "./Sidebar";
 import "../styles/global.css";
+import MarksControls from "./marks/MarksControls";
+import MarksTable from "./marks/MarksTable";
+import styles from "./marks/MarksPage.module.css";
 
 import { API_BASE } from "../api/apiConfig";
 import { getRtdbRoot, RTDB_BASE_RAW } from "../api/rtdbScope";
@@ -1401,13 +1404,8 @@ export default function MarksPage() {
 
   return (
     <div
-      className="dashboard-page"
+      className={`${styles.pageRoot} dashboard-page`}
       style={{
-        background: "var(--page-bg)",
-        minHeight: "100vh",
-        height: "100vh",
-        overflow: "hidden",
-        color: "var(--text-primary)",
         "--surface-panel": "#ffffff",
         "--surface-accent": "#eff6ff",
         "--surface-muted": "#f8fafc",
@@ -1426,7 +1424,7 @@ export default function MarksPage() {
         "--shadow-panel": "0 14px 30px rgba(15, 23, 42, 0.10)",
       }}
     >
-      <div className="google-dashboard" style={{ display: "flex", gap: 0, padding: 0, height: "calc(100vh - 73px)", overflow: "hidden" }}>
+      <div className={`${styles.dashboardShell} google-dashboard`}>
         <Sidebar
           active="marks"
           sidebarOpen={sidebarOpen}
@@ -1435,34 +1433,17 @@ export default function MarksPage() {
           handleLogout={handleLogout}
         />
 
-        <div
-          className="teacher-sidebar-spacer"
-          style={{
-            width: "var(--sidebar-width)",
-            minWidth: "var(--sidebar-width)",
-            flex: "0 0 var(--sidebar-width)",
-            pointerEvents: "none",
-          }}
-        />
+        <div className={`${styles.sidebarSpacer} teacher-sidebar-spacer`} />
 
-        {/* MAIN CONTENT */}
         <div
-          className="google-main"
-          style={{
-            flex: 1,
-            width: "100%",
-            minWidth: 0,
-            height: "100%",
-            marginLeft: 0,
-            padding: isMobile ? "0 8px" : "0 18px",
-            overflowY: "auto",
-            overflowX: "hidden",
-            textAlign: "left",
-            background: "#ffffff",
-          }}
+          className={`${styles.main} google-main`}
+          style={{ padding: isMobile ? "0 8px" : "0 18px" }}
         >
-          <div className="main-inner" style={{ padding: isMobile ? "10px 0 20px" : "20px 0", width: "100%", maxWidth: "100%", margin: 0 }}>
-            <div className="section-header-card" style={{ marginBottom: 16, background: "#ffffff", border: "1px solid #dbeafe", boxShadow: "0 14px 30px rgba(37, 99, 235, 0.10)" }}>
+          <div
+            className={styles.mainInner}
+            style={{ padding: isMobile ? "10px 0 20px" : "20px 0" }}
+          >
+            <div className={`section-header-card ${styles.headerCard}`}>
               <h2 className="section-header-card__title" style={{ fontSize: 24 }}>Marks Entry Dashboard</h2>
               <div className="section-header-card__meta">
                 <span>{activeSemester === "semester1" ? "Semester 1" : "Semester 2"}</span>
@@ -1479,287 +1460,47 @@ export default function MarksPage() {
               </div>
             </div>
 
-            <div
-              style={{
-                marginBottom: "14px",
-                display: "flex",
-                justifyContent: "flex-start",
-                alignItems: "center",
-                gap: "12px",
-                background: "var(--surface-panel)",
-                border: "1px solid var(--border-soft)",
-                boxShadow: "var(--shadow-soft)",
-                borderRadius: 14,
-                padding: isMobile ? "12px" : "14px 16px",
-                flexWrap: "wrap",
-              }}
-            >
-              <label
-                style={{
-                  fontWeight: "600",
-                  color: "var(--text-secondary)",
-                  fontSize: "14px",
-                }}
-              >
-                Select Course:
-              </label>
-              <select
-                value={selectedCourseId}
-                disabled={manualModeSwitchLocked}
-                onChange={async (e) => {
-                  const nextCourseId = e.target.value;
-                  const didFlush = await prepareMarksContextSwitch();
-                  if (!didFlush) return;
-                  setSelectedCourseId(nextCourseId);
-                }}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: "12px",
-                  border: "1px solid var(--border-strong)",
-                  background: "var(--surface-panel)",
-                  minWidth: isMobile ? "100%" : "300px",
-                  fontSize: "14px",
-                  fontWeight: "500",
-                  color: "var(--text-primary)",
-                  opacity: manualModeSwitchLocked ? 0.75 : 1,
-                  cursor: manualModeSwitchLocked ? "not-allowed" : "pointer",
-                }}
-              >
-                <option value="">-- Select Course --</option>
-                {courses.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.subject} - Grade {c.grade} Section {c.section}
-                  </option>
-                ))}
-              </select>
-
-              <div
-                style={{
-                  marginLeft: isMobile ? 0 : "auto",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 10,
-                  background: "#ffffff",
-                  border: "1px solid #dbeafe",
-                  borderRadius: 999,
-                  padding: "6px 8px 6px 12px",
-                }}
-              >
-                <span style={{ fontWeight: 800, color: "#334155", fontSize: 12, whiteSpace: "nowrap" }}>
-                  Auto Save {autoSaveEnabled ? "On" : "Off"}
-                </span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={autoSaveEnabled}
-                  onClick={() => setAutoSaveEnabled((previousValue) => !previousValue)}
-                  style={{
-                    position: "relative",
-                    width: 52,
-                    height: 30,
-                    borderRadius: 999,
-                    border: autoSaveEnabled ? "1px solid #007AFB" : "1px solid #cbd5e1",
-                    background: autoSaveEnabled ? "#007AFB" : "#e2e8f0",
-                    cursor: "pointer",
-                    transition: "all 0.2s ease",
-                    padding: 0,
-                    flexShrink: 0,
-                  }}
-                >
-                  <span
-                    aria-hidden="true"
-                    style={{
-                      position: "absolute",
-                      top: 3,
-                      left: autoSaveEnabled ? 25 : 3,
-                      width: 22,
-                      height: 22,
-                      borderRadius: "50%",
-                      background: "#ffffff",
-                      boxShadow: "0 4px 10px rgba(15, 23, 42, 0.16)",
-                      transition: "left 0.2s ease",
-                    }}
-                  />
-                </button>
-              </div>
-
-              {manualModeSwitchLocked && (
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    padding: "8px 12px",
-                    borderRadius: 999,
-                    background: "#fff7ed",
-                    border: "1px solid #fdba74",
-                    color: "#9a3412",
-                    fontWeight: 700,
-                    fontSize: 12,
-                  }}
-                >
-                  {manualModeSwitchMessage}
-                </span>
-              )}
-            </div>
-            {/* Semester Tabs */}
-            {selectedCourseId && (
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "flex-start",
-                  gap: "10px",
-                  marginBottom: "14px",
-                  borderBottom: "1px solid var(--border-soft)",
-                  paddingBottom: "8px",
-                  overflowX: "auto",
-                }}
-              >
-                {["semester1", "semester2"].map((sem) => {
-                  const isActive = activeSemester === sem;
-                  return (
-                    <button
-                      key={sem}
-                      disabled={manualModeSwitchLocked}
-                      onClick={async () => {
-                        const didFlush = await prepareMarksContextSwitch();
-                        if (!didFlush) return;
-                        setActiveSemester(sem);
-                        setStructureSubmitted(false);
-                        setAssessmentList([]);
-                        setStudentMarks({});
-                      }}
-                      style={{
-                        background: isActive ? "var(--accent-soft)" : "var(--surface-panel)",
-                        border: isActive ? "1px solid color-mix(in srgb, var(--accent-strong) 34%, white)" : "1px solid var(--border-soft)",
-                        fontSize: "13px",
-                        fontWeight: "700",
-                        color: isActive ? "var(--accent-strong)" : "var(--text-muted)",
-                        padding: "8px 12px",
-                        borderRadius: 10,
-                        whiteSpace: "nowrap",
-                        opacity: manualModeSwitchLocked ? 0.65 : 1,
-                        cursor: manualModeSwitchLocked ? "not-allowed" : "pointer",
-                      }}
-                    >
-                      {sem === "semester1" ? "Semester 1" : "Semester 2"}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
-    {selectedCourseId && (
-      <div style={{ display: "flex", gap: "12px", marginBottom: "16px", alignItems: "center", flexWrap: "wrap", background: "var(--surface-panel)", border: "1px solid #dbeafe", borderRadius: 16, boxShadow: "0 10px 24px rgba(15, 23, 42, 0.08)", padding: isMobile ? "12px" : "12px 16px" }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: "wrap" }}>
-          <span style={{ fontWeight: 700, color: 'var(--text-secondary)', fontSize: 13 }}>
-            {assessmentMode === "quarter" ? "Quarter:" : "Mode:"}
-          </span>
-          {(quartersBySem[activeSemester] || ['q1','q2']).map((q) => (
-            <button
-              key={q}
-              disabled={manualModeSwitchLocked}
-              onClick={async () => {
-                const didFlush = await prepareMarksContextSwitch();
-                if (!didFlush) return;
-                setSelectedQuarter(q);
-              }}
-              style={{
-                padding: '8px 12px',
-                borderRadius: 10,
-                border: selectedQuarter === q ? '1px solid color-mix(in srgb, var(--accent-strong) 34%, white)' : '1px solid var(--border-soft)',
-                background: selectedQuarter === q ? 'var(--accent-soft)' : 'var(--surface-panel)',
-                cursor: manualModeSwitchLocked ? 'not-allowed' : 'pointer',
-                fontWeight: 700,
-                color: selectedQuarter === q ? 'var(--accent-strong)' : 'var(--text-muted)',
-                opacity: manualModeSwitchLocked ? 0.65 : 1,
-              }}
-            >
-              {assessmentMode === "semester" ? "SEM" : q.toUpperCase()}
-            </button>
-          ))}
-          {/* Two quarters by default (q1, q2) - Add Quarter removed */}
-        </div>
-        {structureSubmitted ? (
-          <>
-            <div
-              style={{
-                fontSize: 12,
-                color: autoSaveStatus === "error" ? "#b91c1c" : "#475569",
-                fontWeight: autoSaveStatus === "error" ? 700 : 600,
-              }}
-            >
-              {autoSaveStatus === "error"
-                ? autoSaveError || "Auto-save failed. Use Save All to retry."
-                : manualModeSwitchLocked
-                ? manualModeSwitchMessage
-                : !autoSaveEnabled
-                ? "Auto-save is off. Use Save All to keep your updates."
-                : hasUnsavedChanges
-                ? `Changes save automatically after ${AUTO_SAVE_DELAY_MS / 1000} seconds.`
-                : lastAutoSavedAt
-                ? `Last saved at ${formatAutoSaveTime(lastAutoSavedAt)}.`
-                : "Changes save automatically as you type."}
-            </div>
-            <button
-              onClick={() => downloadExcel()}
-              style={{
-                padding: "10px 16px",
-                background: "var(--accent-strong)",
-                color: "#fff",
-                border: "none",
-                borderRadius: "10px",
-                fontWeight: 600,
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                cursor: "pointer",
-                boxShadow: "0 12px 22px rgba(29, 78, 216, 0.26)"
-              }}
-              title="Download as Excel"
-            >
-              <FaFileExcel /> Download Excel
-            </button>
-            <button
-              onClick={() => saveAllMarks()}
-              disabled={!structureSubmitted || !assessmentList.length || (assessmentMode === "quarter" && selectedQuarter === 'avg')}
-              style={{
-                padding: "10px 16px",
-                background: !structureSubmitted || !assessmentList.length || (assessmentMode === "quarter" && selectedQuarter === 'avg') ? "var(--surface-strong)" : "var(--accent-strong)",
-                color: "#fff",
-                border: "none",
-                borderRadius: "10px",
-                fontWeight: 600,
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                cursor: !structureSubmitted || !assessmentList.length || (assessmentMode === "quarter" && selectedQuarter === 'avg') ? "not-allowed" : "pointer",
-                boxShadow: !structureSubmitted || !assessmentList.length || (assessmentMode === "quarter" && selectedQuarter === 'avg') ? "none" : "0 12px 22px rgba(29, 78, 216, 0.26)"
-              }}
-              title="Save all marks for current quarter"
-            >
-              <FaSave /> Save All
-            </button>
-          </>
-        ) : null}
-      </div>
-    )}
+            <MarksControls
+              isMobile={isMobile}
+              courses={courses}
+              selectedCourseId={selectedCourseId}
+              setSelectedCourseId={setSelectedCourseId}
+              manualModeSwitchLocked={manualModeSwitchLocked}
+              manualModeSwitchMessage={manualModeSwitchMessage}
+              prepareMarksContextSwitch={prepareMarksContextSwitch}
+              autoSaveEnabled={autoSaveEnabled}
+              setAutoSaveEnabled={setAutoSaveEnabled}
+              activeSemester={activeSemester}
+              setActiveSemester={setActiveSemester}
+              setStructureSubmitted={setStructureSubmitted}
+              setAssessmentList={setAssessmentList}
+              setStudentMarks={setStudentMarks}
+              assessmentMode={assessmentMode}
+              quartersBySem={quartersBySem}
+              selectedQuarter={selectedQuarter}
+              setSelectedQuarter={setSelectedQuarter}
+              structureSubmitted={structureSubmitted}
+              autoSaveStatus={autoSaveStatus}
+              autoSaveError={autoSaveError}
+              hasUnsavedChanges={hasUnsavedChanges}
+              lastAutoSavedAt={lastAutoSavedAt}
+              formatAutoSaveTime={formatAutoSaveTime}
+              AUTO_SAVE_DELAY_MS={AUTO_SAVE_DELAY_MS}
+              downloadExcel={downloadExcel}
+              saveAllMarks={saveAllMarks}
+              assessmentList={assessmentList}
+            />
 
             {/* Template Required Notice */}
             {selectedCourseId && noStudentsInCourse && (
               <div
-                style={{
-                  background: "var(--surface-panel)",
-                  padding: isMobile ? "14px" : "20px",
-                  borderRadius: "14px",
-                  border: "1px solid var(--border-soft)",
-                  boxShadow: "var(--shadow-soft)",
-                  marginBottom: "18px",
-                }}
+                className={styles.noticeCard}
+                style={{ padding: isMobile ? "14px" : "20px" }}
               >
-                <h3 style={{ marginBottom: "10px", color: "var(--text-primary)", fontWeight: "700", fontSize: "18px" }}>
+                <h3 className={styles.noticeTitle}>
                   No Students Found
                 </h3>
-                <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                <p className={styles.noticeText}>
                   No students are assigned to this course/class yet. Ask admin to enroll students for this grade and section.
                 </p>
               </div>
@@ -1767,19 +1508,13 @@ export default function MarksPage() {
 
             {selectedCourseId && !noStudentsInCourse && !structureSubmitted && (
               <div
-                style={{
-                  background: "var(--surface-panel)",
-                  padding: isMobile ? "14px" : "20px",
-                  borderRadius: "14px",
-                  border: "1px solid var(--border-soft)",
-                  boxShadow: "var(--shadow-soft)",
-                  marginBottom: "18px",
-                }}
+                className={styles.noticeCard}
+                style={{ padding: isMobile ? "14px" : "20px" }}
               >
-                <h3 style={{ marginBottom: "16px", color: "var(--text-primary)", fontWeight: "700", fontSize: "18px" }}>
+                <h3 className={styles.noticeTitle} style={{ marginBottom: 16 }}>
                   Assessment Template Not Found
                 </h3>
-                <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                <p className={styles.noticeText}>
                   Admin has not created an assessment template for this course and semester/quarter yet.
                   Teachers can only enter marks based on admin-created templates.
                 </p>
@@ -1788,193 +1523,23 @@ export default function MarksPage() {
 
             {structureSubmitted && (
               <div
-                className="marks-table-wrapper"
+                className={styles.tableWrapper}
                 ref={marksWrapperRef}
                 style={{
-                  position: "relative",
-                  overflowX: "auto",
-                  overflowY: "visible",
-                  minHeight: 120,
-                  width: "100%",
-                  maxWidth: "100%",
                   paddingBottom: 32,
-                  whiteSpace: "normal",
-                  background: "var(--surface-panel)",
-                  borderRadius: 16,
-                  border: "1px solid #dbeafe",
-                  boxShadow: "0 14px 28px rgba(15, 23, 42, 0.10)",
-                  marginBottom: 20,
-                  padding: isMobile ? 10 : 14
+                  padding: isMobile ? 10 : 14,
                 }}
               >
-                  
- 
-    
-                <table
-                  className="marks-table"
-                  style={{
-                    borderCollapse: "collapse",
-                    borderSpacing: 0,
-                    fontSize: "14px",
-                    minWidth: 0,
-                    width: "100%",
-                    maxWidth: "100%",
-                    tableLayout: "fixed",
-                  }}
-                >
-                  <thead>
-                    <tr
-                      style={{
-                        background: "linear-gradient(135deg, var(--accent-strong), var(--accent))",
-                        color: "#fff",
-                        borderRadius: "12px",
-                        textTransform: "uppercase",
-                        letterSpacing: "0.6px",
-                        fontWeight: "700",
-                        fontSize: "12px",
-                      }}
-                    >
-                      <th
-                        style={{
-                          padding: "12px 8px",
-                          textAlign: "center",
-                          background: "rgba(255,255,255,0.05)",
-                          width: 48,
-                          minWidth: 48,
-                          maxWidth: 48,
-                          whiteSpace: 'nowrap',
-                          borderRadius: "16px 0 0 16px",
-                          verticalAlign: "middle",
-                        }}
-                      >
-                        No
-                      </th>
-                      <th
-                        style={{
-                          padding: "16px 20px",
-                          textAlign: "left",
-                          background: "rgba(255,255,255,0.1)",
-                          width: 240,
-                          minWidth: 240,
-                          verticalAlign: "middle",
-                        }}
-                      >
-                        <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                          <FaUsers /> Student
-                        </span>
-                      </th>
-                      {assessmentList.map((a, i) => (
-                        <th
-                          key={i}
-                          style={{
-                            padding: "16px 18px",
-                            background: "rgba(255,255,255,0.05)",
-                            textAlign: "center",
-                            transition: "0.3s all",
-                            verticalAlign: "middle",
-                          }}
-                        >
-                          {a.name} ({a.max})
-                        </th>
-                      ))}
-                      <th
-                        style={{
-                          padding: "16px 18px",
-                          background: "rgba(255,255,255,0.05)",
-                          textAlign: "center",
-                          verticalAlign: "middle",
-                          borderRadius: " 0 16px 16px 0",
-                        }}
-                      >
-                        Total
-                      </th>
-                      
-                      
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Array.from(Object.entries(studentMarks)).map(([sid, marks], idx) => {
-                      const total = Object.values(marks).reduce((s, a) => s + (a.score || 0), 0);
-                      const student = students.find((s) => s.id === sid);
-                      return (
-                        <tr
-                          key={sid}
-                          style={{
-                            background: idx % 2 === 0 ? "#ffffff" : "#f8fafc",
-                            borderRadius: "12px",
-                            marginBottom: "10px",
-                            transition: "0.3s all",
-                            cursor: "pointer",
-                          }}
-                          onMouseEnter={(e) => (e.currentTarget.style.background = "#e0e7ff")}
-                          onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 0 ? "#ffffff" : "#f8fafc")}
-                        >
-                          <td style={{ padding: "8px 6px", textAlign: 'center', fontWeight: 700, width: 48, minWidth: 48, maxWidth: 48, whiteSpace: 'nowrap', verticalAlign: "middle" }}>{idx + 1}</td>
-                          <td
-                            style={{
-                              padding: "12px",
-                              textAlign: "left",
-                              width: 240,
-                              minWidth: 240,
-                              fontWeight: "600",
-                              verticalAlign: "middle",
-                            }}
-                          >
-                            <span style={{ fontWeight: 600 }}>{formatStudentName(student?.name)}</span>
-                          </td>
-                          {Object.entries(marks).map(([k, a]) => (
-                            <td key={k} style={{ padding: "12px", textAlign: 'center', verticalAlign: "middle" }}>
-                              {selectedQuarter === 'avg' ? (
-                                <div style={{ fontWeight: 700 }}>{a.score}</div>
-                              ) : (
-                                <input
-                                  type="text"
-                                  inputMode="numeric"
-                                  pattern="\d*"
-                                  min="0"
-                                  max={999}
-                                  value={
-                                    a.score === "" || a.score === null || a.score === undefined || a.score === 0
-                                      ? ""
-                                      : a.score
-                                  }
-                                  placeholder="-"
-                                  onChange={(e) => {
-                                    let v = String(e.target.value || "").replace(/[^0-9]/g, "");
-                                    if (v && v.length > 3) v = v.slice(0, 3);
-                                    updateScore(sid, k, v, a?.max);
-                                  }}
-                                  onKeyDown={(e) => {
-                                    const allowed = ['Backspace','ArrowLeft','ArrowRight','Delete','Tab','Enter'];
-                                    if (allowed.includes(e.key)) return;
-                                    if (!/^[0-9]$/.test(e.key)) e.preventDefault();
-                                  }}
-                                  onWheel={(e) => { e.preventDefault(); e.stopPropagation(); try{ e.currentTarget.blur(); }catch(_){} }}
-                                  style={{
-                                    width: "66px",
-                                    padding: "8px 10px",
-                                    borderRadius: "8px",
-                                    border: cellErrors?.[sid]?.[k] ? "1px solid #ef4444" : "1px solid var(--border-strong)",
-                                    textAlign: "center",
-                                    background: "var(--surface-panel)",
-                                    fontWeight: "500",
-                                  }}
-                                />
-                              )}
-                              {selectedQuarter !== 'avg' ? (
-                                <div style={{ marginTop: 4, fontSize: 10, color: cellErrors?.[sid]?.[k] ? "#dc2626" : "#64748b" }}>
-                                  {cellErrors?.[sid]?.[k] || `max ${a?.max ?? 0}`}
-                                </div>
-                              ) : null}
-                            </td>
-                          ))}
-                          <td style={{ padding: "12px", fontWeight: "600", textAlign: "center", verticalAlign: "middle" }}>{total}</td>
-                          
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                <MarksTable
+                  marksWrapperRef={marksWrapperRef}
+                  assessmentList={assessmentList}
+                  studentMarks={studentMarks}
+                  students={students}
+                  selectedQuarter={selectedQuarter}
+                  cellErrors={cellErrors}
+                  updateScore={updateScore}
+                  formatStudentName={formatStudentName}
+                />
               </div>
             )}
           </div>
