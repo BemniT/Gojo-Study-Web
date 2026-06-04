@@ -16,14 +16,14 @@ import {
   resolveExistingChatKey,
 } from "../utils/chatRtdb";
 import ProfileAvatar from "../components/ProfileAvatar";
-import useChatContacts from "../hooks/useChatContacts";
-import useChatMessages from "../hooks/useChatMessages";
-import useChatPresence from "../hooks/useChatPresence";
+import useChatContacts from "../hooks/chat/useChatContacts";
+import useChatMessages from "../hooks/chat/useChatMessages";
+import useChatPresence from "../hooks/chat/useChatPresence";
 import {
   ChatImagePreview,
   ChatImageActionMenu,
   ChatTextActionMenu,
-} from "../components/dashboard/ChatOverlays";
+} from "../components/dashboard/chat/ChatOverlays";
 import "../styles/global.css";
 
 const RTDB_BASE = FIREBASE_DATABASE_URL;

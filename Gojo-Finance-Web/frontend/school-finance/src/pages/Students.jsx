@@ -7,7 +7,7 @@ import {
 import axios from "axios";
 import { format, parseISO, startOfWeek, startOfMonth } from "date-fns";
 import { useMemo } from "react";
-import { FixedSizeList } from "react-window";
+// import { FixedSizeList } from 'react-window';
 import { getDatabase, ref, onValue, push, update } from "firebase/database";
 
 import { db as dbRT } from "../firebase";

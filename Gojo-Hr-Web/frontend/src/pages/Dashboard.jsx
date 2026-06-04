@@ -1064,7 +1064,6 @@ function toIsoDateString(date) {
   return `${year}-${month}-${day}`;
 }
 
-<<<<<<< HEAD
 function getOrthodoxHolidayEasterDate(year) {
   const a = year % 4;
   const b = year % 7;
@@ -1078,8 +1077,6 @@ function getOrthodoxHolidayEasterDate(year) {
   return new Date(julianDate.getUTCFullYear(), julianDate.getUTCMonth(), julianDate.getUTCDate());
 }
 
-=======
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
 function getRecurringHolidayEvents(year) {
   const orthodoxEaster = getOrthodoxHolidayEasterDate(year);
   const orthodoxGoodFriday = new Date(orthodoxEaster);
@@ -1190,14 +1187,6 @@ function normalizeAttendanceSummaryEntry(entry = {}) {
 
 export default function Dashboard() {
   const [employees, setEmployees] = useState([]);
-<<<<<<< HEAD
-  const [users, setUsers] = useState([]);
-  const [attendanceByDate, setAttendanceByDate] = useState({});
-  const [conversations, setConversations] = useState([]);
-  const [posts, setPosts] = useState([]);
-  const [calendarEvents, setCalendarEvents] = useState([]);
-  const [upcomingCalendarEvents, setUpcomingCalendarEvents] = useState([]);
-=======
   const [attendanceSummaryByDate, setAttendanceSummaryByDate] = useState({});
   const [attendancePeopleDetailByDate, setAttendancePeopleDetailByDate] = useState({});
   const [attendancePeopleLoading, setAttendancePeopleLoading] = useState(false);
@@ -1207,7 +1196,6 @@ export default function Dashboard() {
   const [hasMorePosts, setHasMorePosts] = useState(false);
   const [loadingMorePosts, setLoadingMorePosts] = useState(false);
   const [calendarEvents, setCalendarEvents] = useState([]);
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
   const [postText, setPostText] = useState('');
   const [postMedia, setPostMedia] = useState(null);
   const [postMediaPreviewFile, setPostMediaPreviewFile] = useState(null);
@@ -1296,12 +1284,8 @@ export default function Dashboard() {
   const fileInputRef = useRef(null);
   const CALENDAR_WEEK_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const adminChatUserId = String(admin?.userId || admin?.id || '').trim();
-<<<<<<< HEAD
-  const schoolPath = (path) => withSchoolPath(String(path || '').replace(/^\/+/, ''));
-=======
   const dashboardChatUserId = adminChatUserId || hrUserId;
   const schoolPath = (path) => `Platform1/Schools/${activeSchoolCode}/${String(path || '').replace(/^\/+/, '')}`;
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
   const roleCandidates = [
     admin?.role,
     admin?.userType,
@@ -1493,46 +1477,6 @@ export default function Dashboard() {
       if (forceRefresh) {
         setCachedDashboardResource(calendarCacheKey, normalizedEvents);
       }
-<<<<<<< HEAD
-    } catch (error) {
-      console.error('Failed to load calendar events:', error);
-      setCalendarEvents([]);
-      setUpcomingCalendarEvents([]);
-    } finally {
-      setCalendarEventsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadUsers() {
-      try {
-        const res = await api.get('/users');
-        const items = res.data || [];
-        if (Array.isArray(items)) {
-          if (!cancelled) {
-            setUsers(items);
-          }
-          return;
-        }
-        const normalized = Object.entries(items || {}).map(([id, payload]) => ({
-          ...(payload || {}),
-          id,
-        }));
-        if (!cancelled) {
-          setUsers(normalized);
-        }
-      } catch (e) {
-        console.error(e);
-        if (!cancelled) {
-          setUsers([]);
-        }
-      }
-    }
-
-    loadUsers();
-=======
       setCalendarEvents(normalizedEvents);
     } catch (error) {
       console.error('Failed to load calendar events:', error);
@@ -1571,7 +1515,6 @@ export default function Dashboard() {
     }
 
     loadEmployees();
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
 
     return () => {
       cancelled = true;
@@ -1636,46 +1579,6 @@ export default function Dashboard() {
     };
   }, []);
 
-<<<<<<< HEAD
-  useEffect(() => {
-    let cancelled = false;
-
-    async function fetchCalendarDeadlines() {
-      try {
-        const response = await api.get('/api/calendar_events', {
-          params: {
-            deadlinesOnly: 1,
-            upcoming: 1,
-            days: 120,
-          },
-        });
-
-        const events = Array.isArray(response.data)
-          ? response.data
-          : Array.isArray(response.data?.events)
-            ? response.data.events
-            : [];
-
-        if (!cancelled) {
-          setUpcomingCalendarEvents(events);
-        }
-      } catch (error) {
-        console.error('Failed to load calendar deadlines:', error);
-        if (!cancelled) {
-          setUpcomingCalendarEvents([]);
-        }
-      }
-    }
-
-    fetchCalendarDeadlines();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeSchoolCode]);
-
-=======
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
   const count = employees.length;
   const departments = Array.from(new Set(employees.map(e => e.department).filter(Boolean))).length || 3;
   const openPositions = Math.max(2, Math.round((count / 10))) ;

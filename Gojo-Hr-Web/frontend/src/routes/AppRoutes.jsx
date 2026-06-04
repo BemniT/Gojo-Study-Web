@@ -76,12 +76,7 @@ function PersistentSidebarShell() {
 
 function RootRedirect() {
   const admin = readStoredAdmin()
-<<<<<<< HEAD
-  const hasSession = Boolean(admin?.hrId || admin?.adminId || admin?.id || admin?.userId)
-
-=======
   const hasSession = Boolean(admin && typeof admin === 'object' && Object.keys(admin).length)
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
   return <Navigate to={hasSession ? '/dashboard' : '/login'} replace />
 }
 
@@ -104,10 +99,7 @@ export default function AppRoutes() {
         <Route path="/" element={<RootRedirect />} />
         <Route path="/login" element={<Login />} />
         <Route path="/dashboard" element={<Dashboard />} />
-<<<<<<< HEAD
-=======
         <Route path="/register" element={<Register />} />
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
         <Route path="/employees" element={<Employees />} />
         <Route path="/employees/attendance" element={<EmployeesAttendance />} />
         <Route path="/employees/terminated" element={<TerminatedEmployees />} />

@@ -1,17 +1,17 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 
-import { useAdminSession } from "../hooks/useAdminSession";
-import { usePosts } from "../hooks/usePosts";
-import { useConversations } from "../hooks/useConversations";
-import { useCalendar } from "../hooks/useCalendar";
+import { useAdminSession } from "../hooks/auth/useAdminSession";
+import { usePosts } from "../hooks/posts/usePosts";
+import { useConversations } from "../hooks/chat/useConversations";
+import { useCalendar } from "../hooks/calendar/useCalendar";
 
-import DashboardLayout from "../components/dashboard/DashboardLayout";
-import PostsFeed from "../components/dashboard/PostsFeed";
-import RightSidebar from "../components/dashboard/RightSidebar";
-import CreatePostModal from "../components/dashboard/CreatePostModal";
-import CalendarEventModal from "../components/dashboard/CalendarEventModal";
-import ConfirmDialog from "../components/dashboard/ConfirmDialog";
+import DashboardLayout from "../components/dashboard/layout/DashboardLayout";
+import PostsFeed from "../components/dashboard/posts/PostsFeed";
+import RightSidebar from "../components/dashboard/layout/RightSidebar";
+import CreatePostModal from "../components/dashboard/posts/CreatePostModal";
+import CalendarEventModal from "../components/dashboard/calendar/CalendarEventModal";
+import ConfirmDialog from "../components/dashboard/modals/ConfirmDialog";
 import EditPostModal from "../components/EditPostModal";
 import Toast from "../components/Toast";
 

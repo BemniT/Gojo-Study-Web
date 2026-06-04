@@ -22,7 +22,7 @@ import axios from "axios";
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { FixedSizeList } from 'react-window';
 import { BACKEND_BASE } from "../config.js";
-import useTopbarNotifications from "../hooks/useTopbarNotifications";
+import useTopbarNotifications from "../hooks/notifications/useTopbarNotifications";
 import ProfileAvatar from "../components/ProfileAvatar";
 import {
   buildChatSummaryPath,
@@ -30,14 +30,14 @@ import {
   normalizeChatSummaryValue,
 } from "../utils/chatRtdb";
 import { schoolNodeBase } from "../utils/schoolDbRouting";
-import useParentsList from "../hooks/useParentsList";
-import useParentChat from "../hooks/useParentChat";
-import useParentDetail from "../hooks/useParentDetail";
+import useParentsList from "../hooks/parents/useParentsList";
+import useParentChat from "../hooks/chat/useParentChat";
+import useParentDetail from "../hooks/parents/useParentDetail";
 import {
   ParentDetailsSection,
   ParentChildrenSection,
   ParentStatusSection,
-} from "../components/dashboard/ParentDetailSections";
+} from "../components/dashboard/parents/ParentDetailSections";
 
 const BIG_NODE_CACHE_TTL_MS = 5 * 60 * 1000;
 

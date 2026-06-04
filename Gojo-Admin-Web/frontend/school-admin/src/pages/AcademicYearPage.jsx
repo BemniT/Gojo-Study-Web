@@ -1,14 +1,14 @@
 import React, { useState } from "react";
 import { FaChevronDown, FaSearch, FaSyncAlt, FaUsers } from "react-icons/fa";
 
-import DashboardLayout from "../components/dashboard/DashboardLayout";
-import ConfirmDialog from "../components/dashboard/ConfirmDialog";
+import DashboardLayout from "../components/dashboard/layout/DashboardLayout";
+import ConfirmDialog from "../components/dashboard/modals/ConfirmDialog";
 import Toast from "../components/Toast";
 import ProfileAvatar from "../components/ProfileAvatar";
 
-import { useAdminSession } from "../hooks/useAdminSession";
-import { useAcademicYears } from "../hooks/useAcademicYears";
-import { useYearHistoryStudents } from "../hooks/useYearHistoryStudents";
+import { useAdminSession } from "../hooks/auth/useAdminSession";
+import { useAcademicYears } from "../hooks/academic/useAcademicYears";
+import { useYearHistoryStudents } from "../hooks/academic/useYearHistoryStudents";
 
 // ---- Module-scope styles ----
 const PAGE_MAX_WIDTH = 1120;

@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   FaHome,
@@ -26,13 +26,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { FixedSizeList } from 'react-window';
 import { BACKEND_BASE } from "../config.js";
 import ProfileAvatar from "../components/ProfileAvatar";
-import AdminVerifyModal from "../components/dashboard/AdminVerifyModal";
-import TeacherChatPopup from "../components/dashboard/TeacherChatPopup";
-import { useTeacherSchedule } from "../hooks/useTeacherSchedule";
-import { useTeacherChat } from "../hooks/useTeacherChat";
-import { useTeacherLessonPlans } from "../hooks/useTeacherLessonPlans";
-import TeacherDetailSidebar from "../components/dashboard/TeacherDetailSidebar";
-import useTeachersList from "../hooks/useTeachersList";
+import AdminVerifyModal from "../components/dashboard/modals/AdminVerifyModal";
+import TeacherChatPopup from "../components/dashboard/chat/TeacherChatPopup";
+import { useTeacherSchedule } from "../hooks/teachers/useTeacherSchedule";
+import { useTeacherChat } from "../hooks/chat/useTeacherChat";
+import { useTeacherLessonPlans } from "../hooks/teachers/useTeacherLessonPlans";
+import TeacherDetailSidebar from "../components/dashboard/teachers/TeacherDetailSidebar";
+import useTeachersList from "../hooks/teachers/useTeachersList";
 import {
   normalizeWeekForKey,
   normalizeDayForKey,

@@ -1,9 +1,9 @@
 import React, { useState } from "react";
 import ProfileAvatar from "../components/ProfileAvatar";
-import DashboardLayout from "../components/dashboard/DashboardLayout";
-import { useAdminSession } from "../hooks/useAdminSession";
-import { useOverview } from "../hooks/useOverview";
-import { useIsNarrow } from "../hooks/useWindowSize";
+import DashboardLayout from "../components/dashboard/layout/DashboardLayout";
+import { useAdminSession } from "../hooks/auth/useAdminSession";
+import { useOverview } from "../hooks/dashboard/useOverview";
+import { useIsNarrow } from "../hooks/ui/useWindowSize";
 
 // ---- Module-scope style constants (no per-render allocation) ----
 // Overview is a full-width page (no narrow feed column), so it fills
