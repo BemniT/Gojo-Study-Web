@@ -4,14 +4,15 @@ import { FaBell, FaFacebookMessenger } from "react-icons/fa";
 import ProfileAvatar from "./ProfileAvatar";
 import RegisterSidebar from "./RegisterSidebar";
 import useTopbarNotifications, { RegisterNotificationsContext } from "../hooks/useTopbarNotifications";
+import { FIREBASE_DATABASE_URL } from "../config";
 
-const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+const DB_BASE = FIREBASE_DATABASE_URL;
 
 const PAGE_TITLES = {
   "/dashboard": "Dashboard",
   "/overview": "Overview",
   "/academic-years": "Academic Year Management",
-  "/grede-management": "Grade Management",
+  "/grade-management": "Grade Management",
   "/promotion-system": "Promotion System",
   "/transfer-withdrawal": "Transfer & Withdrawal",
   "/document-generation": "Document Generation",

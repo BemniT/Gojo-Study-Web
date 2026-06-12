@@ -5,7 +5,7 @@ import Login from "../pages/Login";
 import Dashboard from "../pages/Dashboard";
 import Overview from "../pages/Overview";
 import AcademicYearManagement from "../pages/AcademicYearManagement";
-import GredeManagement from "../pages/GredeManagement";
+import GradeManagement from "../pages/GradeManagement";
 import PromotionSystem from "../pages/PromotionSystem";
 import TransferWithdrawal from "../pages/TransferWithdrawal";
 import DocumentGeneration from "../pages/DocumentGeneration";
@@ -47,7 +47,7 @@ export default function AppRoutes() {
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/overview" element={<Overview />} />
             <Route path="/academic-years" element={<AcademicYearManagement />} />
-            <Route path="/grede-management" element={<GredeManagement />} />
+            <Route path="/grade-management" element={<GradeManagement />} />
             <Route path="/promotion-system" element={<PromotionSystem />} />
             <Route path="/transfer-withdrawal" element={<TransferWithdrawal />} />
             <Route path="/document-generation" element={<DocumentGeneration />} />

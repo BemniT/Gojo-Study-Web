@@ -17,7 +17,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 import firebase_admin
 from firebase_admin import credentials, db, storage
-from pypdf import PdfReader
+# from pypdf import PdfReader
 from werkzeug.exceptions import HTTPException
 
 
