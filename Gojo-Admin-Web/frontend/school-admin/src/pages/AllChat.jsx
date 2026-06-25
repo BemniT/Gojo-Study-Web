@@ -16,13 +16,18 @@ import {
   resolveExistingChatKey,
 } from "../utils/chatRtdb";
 import ProfileAvatar from "../components/ProfileAvatar";
+import useChatContacts from "../hooks/chat/useChatContacts";
+import useChatMessages from "../hooks/chat/useChatMessages";
+import useChatPresence from "../hooks/chat/useChatPresence";
+import {
+  ChatImagePreview,
+  ChatImageActionMenu,
+  ChatTextActionMenu,
+} from "../components/dashboard/chat/ChatOverlays";
 import "../styles/global.css";
 
 const RTDB_BASE = FIREBASE_DATABASE_URL;
 const DEFAULT_PROFILE_IMAGE = "/default-profile.png";
-const CHAT_POLL_IDLE_GRACE_MS = 2 * 60 * 1000;
-const PRESENCE_POLL_INTERVAL_MS = 2 * 60 * 1000;
-const PRESENCE_BATCH_SIZE = 12;
 // Contact-list data changes rarely — cache for 15 minutes to avoid re-downloading on every navigation
 const CONTACT_LIST_CACHE_TTL_MS = 15 * 60 * 1000;
 
@@ -81,93 +86,11 @@ const createPlaceholderAvatar = (name) => {
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 };
 
-const sanitizeProfileImage = (value) => {
-  const raw = String(value || "").trim();
-  if (!raw) return DEFAULT_PROFILE_IMAGE;
 
-  const lower = raw.toLowerCase();
-  if (lower.startsWith("file://") || lower.startsWith("content://")) {
-    return DEFAULT_PROFILE_IMAGE;
-  }
 
-  return raw;
-};
 
-const resolveAvatarSrc = (rawValue, name) => {
-  const sanitized = sanitizeProfileImage(rawValue);
-  if (!sanitized || sanitized === DEFAULT_PROFILE_IMAGE) {
-    return DEFAULT_PROFILE_IMAGE;
-  }
-  return sanitized;
-};
 
-const loadImageFromFile = (file) =>
-  new Promise((resolve, reject) => {
-    const objectUrl = URL.createObjectURL(file);
-    const image = new Image();
-    image.onload = () => {
-      URL.revokeObjectURL(objectUrl);
-      resolve(image);
-    };
-    image.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error("Failed to load image file"));
-    };
-    image.src = objectUrl;
-  });
 
-const compressImageToJpeg = async (file, { maxWidth = 1280, maxHeight = 1280, quality = 0.72 } = {}) => {
-  const image = await loadImageFromFile(file);
-
-  let width = image.naturalWidth || image.width;
-  let height = image.naturalHeight || image.height;
-
-  const ratio = Math.min(maxWidth / width, maxHeight / height, 1);
-  width = Math.max(1, Math.round(width * ratio));
-  height = Math.max(1, Math.round(height * ratio));
-
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-
-  const context = canvas.getContext("2d");
-  if (!context) {
-    throw new Error("Canvas context unavailable");
-  }
-
-  context.drawImage(image, 0, 0, width, height);
-
-  const blob = await new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (output) => {
-        if (!output) {
-          reject(new Error("Image compression failed"));
-          return;
-        }
-        resolve(output);
-      },
-      "image/jpeg",
-      quality
-    );
-  });
-
-  return blob;
-};
-
-const isActiveRecord = (record = {}) => {
-  const raw = record?.status ?? record?.isActive;
-  if (typeof raw === "boolean") return raw;
-  const normalized = String(raw || "active").toLowerCase();
-  return normalized === "active" || normalized === "true" || normalized === "1";
-};
-
-const pickFirstNonEmpty = (...values) => {
-  for (const value of values) {
-    const normalized = String(value || "").trim();
-    if (normalized) return normalized;
-  }
-  return "";
-};
 
 const uniqueNonEmptyValues = (values) => {
   const seen = new Set();
@@ -204,11 +127,6 @@ const officeRoleLabel = (role) => {
   return "Management";
 };
 
-const sortContactsBySummary = (left, right) => {
-  return String(left?.name || "").localeCompare(String(right?.name || ""), undefined, {
-    sensitivity: "base",
-  });
-};
 
 export default function AllChat() {
   const navigate = useNavigate();
@@ -221,7 +139,6 @@ export default function AllChat() {
   const lastContactScrollTopRef = useRef(0);
   const suppressAutoCardToggleRef = useRef(false);
   const autoCardToggleTimeoutRef = useRef(null);
-  const lastChatActivityAtRef = useRef(Date.now());
 
   const admin = JSON.parse(localStorage.getItem("admin") || localStorage.getItem("gojo_admin") || "{}") || {};
   const API_BASE = `${BACKEND_BASE}/api`;
@@ -252,17 +169,8 @@ export default function AllChat() {
     }
   };
 
-  const [teachers, setTeachers] = useState([]);
-  const [students, setStudents] = useState([]);
-  const [parents, setParents] = useState([]);
-  const [managements, setManagements] = useState([]);
-  const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [presence, setPresence] = useState({});
   const [isMobile, setIsMobile] = useState(false);
-  const [unreadCounts, setUnreadCounts] = useState({});
-  const [loadingContacts, setLoadingContacts] = useState(false);
   const [searchText, setSearchText] = useState("");
   const [selectedStudentGrade, setSelectedStudentGrade] = useState("All");
   const [selectedStudentSection, setSelectedStudentSection] = useState("All");
@@ -273,34 +181,26 @@ export default function AllChat() {
   const incomingContact = incomingState.contact || incomingState.user || null;
   const incomingTab = normalizeTab(incomingState.tab || incomingState.userType || incomingContact?.type) || "teacher";
 
+  // ---------------- CHAT CONTACTS (hook owns 4 contact lists + summary listener) ----------------
+  const {
+    teachers, setTeachers,
+    students, setStudents,
+    parents, setParents,
+    managements, setManagements,
+    unreadCounts, setUnreadCounts,
+    loadingContacts,
+  } = useChatContacts({
+    adminUserId,
+    apiBase: API_BASE,
+    schoolScopeCode: effectiveSchoolScopeCode,
+  });
+
   const [selectedTab, setSelectedTab] = useState(incomingTab);
   const [selectedChatUser, setSelectedChatUser] = useState(incomingContact || null);
-  const [currentChatKey, setCurrentChatKey] = useState(null);
-  const [clickedMessageId, setClickedMessageId] = useState(null);
-  const [editingMessages, setEditingMessages] = useState({});
-  const [imageSending, setImageSending] = useState(false);
   const [previewImageUrl, setPreviewImageUrl] = useState("");
   const [imageMenu, setImageMenu] = useState({ open: false, message: null });
   const [textMenu, setTextMenu] = useState({ open: false, message: null });
 
-  const resolveLegacyChatKey = async (otherUserId) => {
-    if (!otherUserId || !adminUserId) return null;
-    const sortedKey = sortedChatId(adminUserId, otherUserId);
-    const directKey = `${adminUserId}_${otherUserId}`;
-    const reverseKey = `${otherUserId}_${adminUserId}`;
-    const candidates = Array.from(new Set([sortedKey, directKey, reverseKey]));
-
-    for (const key of candidates) {
-      try {
-        const snapshot = await get(ref(db, scopedPath(`Chats/${key}/messages`)));
-        if (snapshot.exists()) return key;
-      } catch {
-        // ignore candidate lookup failures
-      }
-    }
-
-    return sortedKey;
-  };
 
   const allowedUserIds = useMemo(() => {
     const ids = new Set();
@@ -310,6 +210,43 @@ export default function AllChat() {
     managements.forEach((user) => ids.add(String(user.userId || "")));
     return ids;
   }, [teachers, students, parents, managements]);
+
+  // ---------------- CHAT PRESENCE (hook owns presence map + polling) ----------------
+  const { presence, setPresence } = useChatPresence({
+    selectedTab,
+    selectedChatUser,
+    teachers,
+    students,
+    parents,
+    managements,
+    schoolScopeCode: effectiveSchoolScopeCode,
+    apiBase: API_BASE,
+  });
+
+  // ---------------- CHAT MESSAGES (hook owns active conversation) ----------------
+  const {
+    messages,
+    input, setInput,
+    currentChatKey, setCurrentChatKey,
+    clickedMessageId, setClickedMessageId,
+    editingMessages, setEditingMessages,
+    imageSending,
+    sendMessage,
+    sendImageMessage,
+    handleEditMessage,
+    handleDeleteMessage,
+  } = useChatMessages({
+    adminUserId,
+    selectedChatUser,
+    setSelectedChatUser,
+    allowedUserIds,
+    loadingContacts,
+    schoolNodePrefix,
+    onPresenceUpdate: (userId, value) =>
+      setPresence((prev) => ({ ...prev, [userId]: value })),
+    onUnreadCleared: (userId) =>
+      setUnreadCounts((prev) => ({ ...prev, [userId]: 0 })),
+  });
 
   const availableStudentGrades = useMemo(() => {
     return [...new Set(students.map((student) => String(student?.grade || "").trim()).filter(Boolean))].sort((a, b) => {
@@ -352,34 +289,6 @@ export default function AllChat() {
     };
   }, [schoolCode]);
 
-  useEffect(() => {
-    const markChatActivity = () => {
-      lastChatActivityAtRef.current = Date.now();
-    };
-
-    const handleVisibilityChange = () => {
-      if (typeof document === "undefined" || document.visibilityState !== "visible") {
-        return;
-      }
-      markChatActivity();
-    };
-
-    window.addEventListener("focus", markChatActivity);
-    window.addEventListener("online", markChatActivity);
-    window.addEventListener("pointerdown", markChatActivity, { passive: true });
-    window.addEventListener("touchstart", markChatActivity, { passive: true });
-    window.addEventListener("keydown", markChatActivity);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
-    return () => {
-      window.removeEventListener("focus", markChatActivity);
-      window.removeEventListener("online", markChatActivity);
-      window.removeEventListener("pointerdown", markChatActivity);
-      window.removeEventListener("touchstart", markChatActivity);
-      window.removeEventListener("keydown", markChatActivity);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, []);
 
   useEffect(() => {
     if (selectedStudentSection === "All") return;
@@ -459,330 +368,8 @@ export default function AllChat() {
     lastContactScrollTopRef.current = currentTop;
   };
 
-  useEffect(() => {
-    if (!adminUserId) return;
 
-    const fetchUsers = async () => {
-      setLoadingContacts(true);
-      try {
-        // Use directory nodes (lightweight summaries) instead of full role nodes.
-        // Users.json is dropped — it's keyed by push-key so usersMap[userId] always
-        // returned {} anyway; role/directory nodes already carry name & profileImage.
-        const [teachersRes, studentsRes, parentsRes, hrRes, financeRes, registerersRes, ownersRaw, teachersRaw, studentsRaw, parentsRaw, ownerSummariesRes] = await Promise.all([
-          readSchoolNodeApi("TeacherDirectory", {}),
-          readSchoolNodeApi("StudentDirectory", {}),
-          readSchoolNodeApi("ParentDirectory", {}),
-          readSchoolNodeApi("HR", {}),
-          readSchoolNodeApi("Finance", {}),
-          readSchoolNodeApi("Registerers", {}),
-          readSchoolNodeApi("Users", {}),
-          readSchoolNodeApi("Teachers", {}),
-          readSchoolNodeApi("Students", {}),
-          readSchoolNodeApi("Parents", {}),
-          readSchoolNodeApi(buildOwnerChatSummariesPath(adminUserId), {}),
-        ]);
-        const usersById = Object.values(ownersRaw || {}).reduce((result, userRecord) => {
-          const userId = String(userRecord?.userId || "").trim();
-          if (userId) {
-            result[userId] = userRecord;
-          }
-          return result;
-        }, {});
-        const ownerSummaries = ownerSummariesRes && typeof ownerSummariesRes === "object" ? ownerSummariesRes : {};
-        const summaryByOtherUserId = Object.entries(ownerSummaries).reduce((result, [chatId, summaryValue]) => {
-          const summary = normalizeChatSummaryValue(summaryValue, { chatId });
-          if (!summary.otherUserId) {
-            return result;
-          }
 
-          const currentSummary = result[summary.otherUserId];
-          if (!currentSummary || summary.lastMessageTime >= currentSummary.lastMessageTime) {
-            result[summary.otherUserId] = summary;
-          }
-
-          return result;
-        }, {});
-
-        const buildLastMessageMeta = (otherUserId) => {
-          const summary = summaryByOtherUserId[String(otherUserId || "").trim()] || null;
-          const resolvedChatKey = String(summary?.chatId || sortedChatId(adminUserId, otherUserId)).trim();
-
-          return {
-            chatKey: resolvedChatKey,
-            lastMsgTime: getConversationSortTime(summary?.lastMessageTime),
-            lastMsgText: String(summary?.lastMessageText || "").trim(),
-            unread: Math.max(0, Number(summary?.unreadCount || 0) || 0),
-          };
-        };
-
-        const hydrateChatPreviewMeta = async (records) => {
-          const hydratedRecords = await mapInBatches(records, 24, async (record) => ({
-            ...record,
-            ...buildLastMessageMeta(record.userId),
-          }));
-
-          return hydratedRecords;
-        };
-
-        // TeacherDirectory: each entry has { teacherId, userId, name, profileImage, isActive, ... }
-        const teacherDirectoryRecords = Object.entries(teachersRes || {})
-          .map(([teacherId, teacherNode]) => {
-            const userId = String(teacherNode?.userId || "").trim();
-            if (!userId) return null;
-            const name = pickFirstNonEmpty(teacherNode?.name, teacherId, "Teacher");
-            return {
-              id: teacherId,
-              teacherId,
-              userId,
-              type: "teacher",
-              name,
-              profileImage: resolveAvatarSrc(teacherNode?.profileImage, name),
-              lastSeen: null,
-              isActive: teacherNode?.isActive !== false,
-            };
-          })
-          .filter(Boolean)
-          .filter((record) => record.isActive);
-
-        const teacherFallbackRecords = Object.entries(teachersRaw || {})
-          .map(([teacherId, teacherNode]) => {
-            const userId = String(teacherNode?.userId || "").trim();
-            if (!userId) return null;
-            const userNode = usersById[userId] || {};
-            const name = pickFirstNonEmpty(userNode?.name, userNode?.username, teacherNode?.name, teacherId, "Teacher");
-            return {
-              id: teacherId,
-              teacherId,
-              userId,
-              type: "teacher",
-              name,
-              profileImage: resolveAvatarSrc(userNode?.profileImage || teacherNode?.profileImage, name),
-              lastSeen: null,
-              isActive: teacherNode?.status !== "inactive" && userNode?.isActive !== false,
-            };
-          })
-          .filter(Boolean)
-          .filter((record) => record.isActive);
-
-        const teacherRecords = teacherDirectoryRecords.length ? teacherDirectoryRecords : teacherFallbackRecords;
-
-        const mappedTeachers = (await hydrateChatPreviewMeta(teacherRecords)).sort(sortContactsBySummary);
-
-        // StudentDirectory: each entry has { studentId, userId, name, profileImage, grade, section, isActive, ... }
-        const studentDirectoryRecords = Object.entries(studentsRes || {})
-          .map(([studentId, studentNode]) => {
-            const userId = String(studentNode?.userId || "").trim();
-            if (!userId) return null;
-            const name = pickFirstNonEmpty(studentNode?.name, studentId, "Student");
-            return {
-              id: studentId,
-              studentId,
-              userId,
-              type: "student",
-              name,
-              grade: String(studentNode?.grade || "").trim(),
-              section: String(studentNode?.section || "").trim().toUpperCase(),
-              profileImage: resolveAvatarSrc(studentNode?.profileImage, name),
-              lastSeen: null,
-              isActive: studentNode?.isActive !== false,
-            };
-          })
-          .filter(Boolean)
-          .filter((record) => record.isActive);
-
-        const studentFallbackRecords = Object.entries(studentsRaw || {})
-          .map(([studentId, studentNode]) => {
-            const userId = String(studentNode?.userId || studentNode?.use || studentNode?.user || "").trim();
-            if (!userId) return null;
-            const userNode = usersById[userId] || {};
-            const basicInfo = studentNode?.basicStudentInformation || {};
-            const name = pickFirstNonEmpty(
-              userNode?.name,
-              userNode?.username,
-              studentNode?.name,
-              studentNode?.studentName,
-              basicInfo?.name,
-              studentId,
-              "Student"
-            );
-            return {
-              id: studentId,
-              studentId,
-              userId,
-              type: "student",
-              name,
-              grade: String(studentNode?.grade || basicInfo?.grade || "").trim(),
-              section: String(studentNode?.section || basicInfo?.section || "").trim().toUpperCase(),
-              profileImage: resolveAvatarSrc(userNode?.profileImage || studentNode?.profileImage || basicInfo?.studentPhoto, name),
-              lastSeen: null,
-              isActive: studentNode?.isActive !== false && userNode?.isActive !== false,
-            };
-          })
-          .filter(Boolean)
-          .filter((record) => record.isActive);
-
-        const studentRecords = studentDirectoryRecords.length ? studentDirectoryRecords : studentFallbackRecords;
-
-        const mappedStudents = (await hydrateChatPreviewMeta(studentRecords)).sort(sortContactsBySummary);
-
-        // ParentDirectory: each entry has { userId, name, profileImage, isActive, children, ... }
-        const parentDirectoryRecords = Object.entries(parentsRes || {})
-          .map(([parentId, parentNode]) => {
-            const userId = String(parentNode?.userId || "").trim();
-            if (!userId) return null;
-            const name = pickFirstNonEmpty(parentNode?.name, parentId, "Parent");
-            return {
-              id: parentId,
-              parentId,
-              userId,
-              type: "parent",
-              name,
-              profileImage: resolveAvatarSrc(parentNode?.profileImage, name),
-              lastSeen: null,
-              isActive: parentNode?.isActive !== false,
-            };
-          })
-          .filter(Boolean)
-          .filter((record) => record.isActive);
-
-        const parentFallbackRecords = Object.entries(parentsRaw || {})
-          .map(([parentId, parentNode]) => {
-            const userId = String(parentNode?.userId || "").trim();
-            if (!userId) return null;
-            const userNode = usersById[userId] || {};
-            const name = pickFirstNonEmpty(userNode?.name, userNode?.username, parentNode?.name, parentId, "Parent");
-            return {
-              id: parentId,
-              parentId,
-              userId,
-              type: "parent",
-              name,
-              profileImage: resolveAvatarSrc(userNode?.profileImage || parentNode?.profileImage, name),
-              lastSeen: null,
-              isActive: parentNode?.isActive !== false && userNode?.isActive !== false,
-            };
-          })
-          .filter(Boolean)
-          .filter((record) => record.isActive);
-
-        const parentRecords = parentDirectoryRecords.length ? parentDirectoryRecords : parentFallbackRecords;
-
-        const mappedParents = (await hydrateChatPreviewMeta(parentRecords)).sort(sortContactsBySummary);
-
-        const mapOfficeRecords = (source, officeRole) =>
-          Object.entries(source || {})
-            .map(([roleNodeId, roleNode]) => {
-              const userId = String(roleNode?.userId || "").trim();
-              if (!userId) return null;
-              const name = pickFirstNonEmpty(roleNode?.name, roleNodeId, officeRoleLabel(officeRole));
-              return {
-                id: roleNodeId,
-                roleNodeId,
-                userId,
-                type: "management",
-                officeRole,
-                name,
-                profileImage: resolveAvatarSrc(roleNode?.profileImage, name),
-                lastSeen: null,
-                isActive: isActiveRecord(roleNode),
-              };
-            })
-            .filter(Boolean)
-            .filter((record) => record.isActive);
-
-        const managementRecords = [
-          ...mapOfficeRecords(hrRes, "hr"),
-          ...mapOfficeRecords(financeRes, "finance"),
-          ...mapOfficeRecords(registerersRes, "registerer"),
-        ];
-
-        const mappedManagements = (await hydrateChatPreviewMeta(managementRecords)).sort(sortContactsBySummary);
-
-        setTeachers(mappedTeachers);
-        setStudents(mappedStudents);
-        setParents(mappedParents);
-        setManagements(mappedManagements);
-        setUnreadCounts(
-          [...mappedTeachers, ...mappedStudents, ...mappedParents, ...mappedManagements].reduce((acc, item) => {
-            acc[item.userId] = Number(item.unread || 0);
-            return acc;
-          }, {})
-        );
-      } catch (error) {
-        console.error("Error fetching users:", error);
-      } finally {
-        setLoadingContacts(false);
-      }
-    };
-
-    fetchUsers();
-  }, [adminUserId, effectiveSchoolScopeCode]);
-
-  useEffect(() => {
-    if (!selectedChatUser?.userId) return;
-    if (loadingContacts) return;
-    if (allowedUserIds.size === 0) return;
-    if (!allowedUserIds.has(String(selectedChatUser.userId || ""))) {
-      setSelectedChatUser(null);
-      setCurrentChatKey(null);
-      setMessages([]);
-    }
-  }, [allowedUserIds, loadingContacts, selectedChatUser]);
-
-  useEffect(() => {
-    if (!adminUserId) return;
-
-    const summaryRef = ref(db, scopedPath(buildOwnerChatSummariesPath(adminUserId)));
-    const unsubscribe = onValue(summaryRef, (snapshot) => {
-      const ownerSummaries = snapshot.val() || {};
-      const summaryByOtherUserId = Object.entries(ownerSummaries && typeof ownerSummaries === "object" ? ownerSummaries : {}).reduce(
-        (result, [chatId, summaryValue]) => {
-          const summary = normalizeChatSummaryValue(summaryValue, { chatId });
-          if (!summary.otherUserId) {
-            return result;
-          }
-
-          const currentSummary = result[summary.otherUserId];
-          if (!currentSummary || summary.lastMessageTime >= currentSummary.lastMessageTime) {
-            result[summary.otherUserId] = summary;
-          }
-
-          return result;
-        },
-        {}
-      );
-
-      const nextUnreadCounts = {};
-      const mergeSummary = (record) => {
-        const summary = summaryByOtherUserId[String(record?.userId || "").trim()] || null;
-        const unreadCount = Math.max(0, Number(summary?.unreadCount || 0) || 0);
-        nextUnreadCounts[String(record?.userId || "").trim()] = unreadCount;
-
-        if (!summary) {
-          return {
-            ...record,
-            unread: unreadCount,
-          };
-        }
-
-        return {
-          ...record,
-          chatKey: String(summary.chatId || record?.chatKey || "").trim(),
-          lastMsgTime: getConversationSortTime(summary.lastMessageTime),
-          lastMsgText: String(summary.lastMessageText || "").trim(),
-          unread: unreadCount,
-        };
-      };
-
-      setTeachers((previousTeachers) => previousTeachers.map(mergeSummary).sort(sortContactsBySummary));
-      setStudents((previousStudents) => previousStudents.map(mergeSummary).sort(sortContactsBySummary));
-      setParents((previousParents) => previousParents.map(mergeSummary).sort(sortContactsBySummary));
-      setManagements((previousManagements) => previousManagements.map(mergeSummary).sort(sortContactsBySummary));
-      setUnreadCounts(nextUnreadCounts);
-    });
-
-    return () => unsubscribe();
-  }, [adminUserId, schoolNodePrefix]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -821,375 +408,12 @@ export default function AllChat() {
     }
   }, [incomingContact, selectedTab, teachers, students, parents, managements]);
 
-  useEffect(() => {
-    if (!selectedChatUser || !adminUserId) return;
 
-    let cancelled = false;
-    let unsubscribeMessages = null;
-    let unsubscribePresence = null;
 
-    const connect = async () => {
-      const chatKey = currentChatKey || selectedChatUser.chatKey || await resolveLegacyChatKey(selectedChatUser.userId);
-      if (!chatKey || cancelled) return;
 
-      setCurrentChatKey(chatKey);
 
-      const messagesRef = ref(db, scopedPath(`Chats/${chatKey}/messages`));
-      const lastSeenRef = ref(db, scopedPath(`Users/${selectedChatUser.userId}/lastSeen`));
 
-      unsubscribeMessages = onValue(messagesRef, async (snapshot) => {
-        const data = snapshot.val() || {};
-        const list = Object.entries(data)
-          .map(([id, message]) => ({
-            id,
-            ...message,
-            isAdmin: String(message.senderId) === String(adminUserId),
-          }))
-          .sort((a, b) => Number(a.timeStamp || 0) - Number(b.timeStamp || 0));
 
-        setMessages(list);
-
-        const updates = {};
-        const hasUnseenIncomingMessages = Object.values(data).some(
-          (message) => String(message?.receiverId) === String(adminUserId) && !message?.seen
-        );
-        const seenAt = Date.now();
-        Object.entries(data).forEach(([messageId, message]) => {
-          if (String(message?.receiverId) === String(adminUserId) && !message?.seen) {
-            updates[`${scopedPath(`Chats/${chatKey}/messages/${messageId}/seen`)}`] = true;
-          }
-        });
-
-        try {
-          if (Object.keys(updates).length) {
-            await update(ref(db), updates);
-          }
-        } catch {
-          // ignore read receipt write failures
-        }
-
-        update(
-          ref(db, scopedPath(buildChatSummaryPath(adminUserId, chatKey))),
-          buildChatSummaryUpdate({
-            chatId: chatKey,
-            otherUserId: selectedChatUser.userId,
-            unreadCount: 0,
-            ...(hasUnseenIncomingMessages
-              ? {
-                  lastMessageSeen: true,
-                  lastMessageSeenAt: seenAt,
-                }
-              : {}),
-          })
-        ).catch(() => {});
-
-        setUnreadCounts((previousCounts) => ({
-          ...previousCounts,
-          [selectedChatUser.userId]: 0,
-        }));
-      });
-
-      unsubscribePresence = onValue(lastSeenRef, (snapshot) => {
-        setPresence((prev) => ({
-          ...prev,
-          [selectedChatUser.userId]: snapshot.val(),
-        }));
-      });
-    };
-
-    connect();
-
-    return () => {
-      cancelled = true;
-      if (typeof unsubscribeMessages === "function") unsubscribeMessages();
-      if (typeof unsubscribePresence === "function") unsubscribePresence();
-    };
-  }, [selectedChatUser, adminUserId, currentChatKey, schoolNodePrefix]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const activeContacts = selectedTab === "student"
-      ? students
-      : selectedTab === "parent"
-        ? parents
-        : selectedTab === "management"
-          ? managements
-          : teachers;
-
-    const presenceUserIds = [...new Set([
-      ...activeContacts.map((contact) => String(contact?.userId || "").trim()).filter(Boolean),
-      String(selectedChatUser?.userId || "").trim(),
-    ].filter(Boolean))];
-
-    if (!presenceUserIds.length) {
-      setPresence({});
-      return undefined;
-    }
-
-    const loadPresence = async ({ force = false } = {}) => {
-      const isVisible = typeof document === "undefined" || document.visibilityState === "visible";
-      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
-      const isRecentlyActive = Date.now() - lastChatActivityAtRef.current <= CHAT_POLL_IDLE_GRACE_MS;
-      if (!force && (!isVisible || !isOnline || !isRecentlyActive)) {
-        return;
-      }
-
-      try {
-        const entries = await mapInBatches(presenceUserIds, PRESENCE_BATCH_SIZE, async (userId) => {
-          const data = await readSchoolNodeApi(`Presence/${userId}`, null);
-
-          return [userId, data];
-        });
-
-        const nextPresence = entries.reduce((result, [userId, value]) => {
-          result[userId] = value;
-          return result;
-        }, {});
-
-        if (!cancelled) {
-          setPresence(nextPresence);
-        }
-      } catch (error) {
-        console.warn("Presence polling unavailable:", error);
-        if (!cancelled) {
-          setPresence({});
-        }
-      }
-    };
-
-    const handleFocusedPresenceRefresh = () => {
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
-        return;
-      }
-      lastChatActivityAtRef.current = Date.now();
-      void loadPresence({ force: true });
-    };
-
-    void loadPresence({ force: true });
-    const intervalId = window.setInterval(() => {
-      void loadPresence();
-    }, PRESENCE_POLL_INTERVAL_MS);
-    window.addEventListener("focus", handleFocusedPresenceRefresh);
-    window.addEventListener("online", handleFocusedPresenceRefresh);
-    document.addEventListener("visibilitychange", handleFocusedPresenceRefresh);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-      window.removeEventListener("focus", handleFocusedPresenceRefresh);
-      window.removeEventListener("online", handleFocusedPresenceRefresh);
-      document.removeEventListener("visibilitychange", handleFocusedPresenceRefresh);
-    };
-  }, [selectedTab, selectedChatUser?.userId, effectiveSchoolScopeCode, teachers, students, parents, managements]);
-
-  const getActiveChatKey = async () => {
-    if (!selectedChatUser || !adminUserId) return null;
-    if (currentChatKey) return currentChatKey;
-    if (selectedChatUser.chatKey) {
-      setCurrentChatKey(selectedChatUser.chatKey);
-      return selectedChatUser.chatKey;
-    }
-    const resolved = await resolveLegacyChatKey(selectedChatUser.userId);
-    setCurrentChatKey(resolved);
-    return resolved;
-  };
-
-  const sendMessage = async () => {
-    if (!input.trim() || !selectedChatUser) return;
-    if (!allowedUserIds.has(String(selectedChatUser.userId || ""))) return;
-
-    const editingId = Object.keys(editingMessages).find((id) => editingMessages[id]);
-    const chatKey = await getActiveChatKey();
-    if (!chatKey) return;
-
-    if (editingId) {
-      await update(ref(db, scopedPath(`Chats/${chatKey}/messages/${editingId}`)), {
-        text: input,
-        edited: true,
-      });
-      setEditingMessages({});
-      setClickedMessageId(null);
-      setInput("");
-      return;
-    }
-
-    const messagesRef = ref(db, scopedPath(`Chats/${chatKey}/messages`));
-    const messageData = {
-      senderId: adminUserId,
-      receiverId: selectedChatUser.userId,
-      type: "text",
-      text: input,
-      seen: false,
-      edited: false,
-      deleted: false,
-      timeStamp: Date.now(),
-    };
-
-    await push(messagesRef, messageData);
-
-    await update(ref(db, scopedPath(`Chats/${chatKey}/participants`)), {
-      [adminUserId]: true,
-      [selectedChatUser.userId]: true,
-    });
-
-    await Promise.all([
-      update(
-        ref(db, scopedPath(buildChatSummaryPath(adminUserId, chatKey))),
-        buildChatSummaryUpdate({
-          chatId: chatKey,
-          otherUserId: selectedChatUser.userId,
-          unreadCount: 0,
-          lastMessageText: input,
-          lastMessageType: "text",
-          lastMessageTime: messageData.timeStamp,
-          lastSenderId: adminUserId,
-          lastMessageSeen: false,
-          lastMessageSeenAt: null,
-        })
-      ),
-      update(
-        ref(db, scopedPath(buildChatSummaryPath(selectedChatUser.userId, chatKey))),
-        buildChatSummaryUpdate({
-          chatId: chatKey,
-          otherUserId: adminUserId,
-          lastMessageText: input,
-          lastMessageType: "text",
-          lastMessageTime: messageData.timeStamp,
-          lastSenderId: adminUserId,
-          lastMessageSeen: false,
-          lastMessageSeenAt: null,
-        })
-      ),
-    ]);
-
-    try {
-      await runTransaction(
-        ref(db, scopedPath(`${buildChatSummaryPath(selectedChatUser.userId, chatKey)}/unreadCount`)),
-        (current) => Number(current || 0) + 1
-      );
-      await set(ref(db, scopedPath(`Chats/${chatKey}/typing`)), { userId: null });
-    } catch {
-      // ignore unread increment failures
-    }
-
-    setInput("");
-  };
-
-  const sendImageMessage = async (event) => {
-    const file = event?.target?.files?.[0];
-    if (!file || !selectedChatUser || !adminUserId) {
-      if (event?.target) event.target.value = "";
-      return;
-    }
-    if (!allowedUserIds.has(String(selectedChatUser.userId || ""))) {
-      if (event?.target) event.target.value = "";
-      return;
-    }
-
-    const chatKey = await getActiveChatKey();
-    if (!chatKey) {
-      if (event?.target) event.target.value = "";
-      return;
-    }
-
-    try {
-      setImageSending(true);
-
-      const compressedBlob = await compressImageToJpeg(file, {
-        maxWidth: 1280,
-        maxHeight: 1280,
-        quality: 0.72,
-      });
-
-      const messagesRef = ref(db, scopedPath(`Chats/${chatKey}/messages`));
-      const messageRef = push(messagesRef);
-      const messageId = messageRef.key;
-      const timeStamp = Date.now();
-
-      const uploadRef = storageRef(storage, `chatImages/${chatKey}/${messageId}.jpg`);
-      await uploadBytes(uploadRef, compressedBlob, { contentType: "image/jpeg" });
-      const imageUrl = await getDownloadURL(uploadRef);
-
-      const messageData = {
-        messageId,
-        senderId: adminUserId,
-        receiverId: selectedChatUser.userId,
-        type: "image",
-        text: "",
-        imageUrl,
-        seen: false,
-        edited: false,
-        deleted: false,
-        timeStamp,
-      };
-
-      await update(messageRef, messageData);
-
-      await update(ref(db, scopedPath(`Chats/${chatKey}/participants`)), {
-        [adminUserId]: true,
-        [selectedChatUser.userId]: true,
-      });
-
-      await Promise.all([
-        update(
-          ref(db, scopedPath(buildChatSummaryPath(adminUserId, chatKey))),
-          buildChatSummaryUpdate({
-            chatId: chatKey,
-            otherUserId: selectedChatUser.userId,
-            unreadCount: 0,
-            lastMessageText: "",
-            lastMessageType: "image",
-            lastMessageTime: timeStamp,
-            lastSenderId: adminUserId,
-            lastMessageSeen: false,
-            lastMessageSeenAt: null,
-          })
-        ),
-        update(
-          ref(db, scopedPath(buildChatSummaryPath(selectedChatUser.userId, chatKey))),
-          buildChatSummaryUpdate({
-            chatId: chatKey,
-            otherUserId: adminUserId,
-            lastMessageText: "",
-            lastMessageType: "image",
-            lastMessageTime: timeStamp,
-            lastSenderId: adminUserId,
-            lastMessageSeen: false,
-            lastMessageSeenAt: null,
-          })
-        ),
-      ]);
-
-      try {
-        await runTransaction(
-          ref(db, scopedPath(`${buildChatSummaryPath(selectedChatUser.userId, chatKey)}/unreadCount`)),
-          (current) => Number(current || 0) + 1
-        );
-      } catch {
-        // ignore unread increment failures
-      }
-    } catch (error) {
-      console.error("Image send failed:", error);
-    } finally {
-      setImageSending(false);
-      if (event?.target) event.target.value = "";
-    }
-  };
-
-  const handleEditMessage = (id) => {
-    const message = messages.find((item) => item.id === id);
-    if (!message) return;
-    setEditingMessages({ [id]: true });
-    setClickedMessageId(id);
-    setInput(String(message.text || ""));
-  };
-
-  const handleDeleteMessage = async (id) => {
-    const chatKey = await getActiveChatKey();
-    if (!chatKey) return;
-    await update(ref(db, scopedPath(`Chats/${chatKey}/messages/${id}`)), { deleted: true });
-  };
 
   const formatTime = (timestamp) => {
     if (!timestamp) return "";
@@ -2116,156 +1340,23 @@ export default function AllChat() {
               </button>
             </div>
 
-            {previewImageUrl ? (
-              <div
-                onClick={() => setPreviewImageUrl("")}
-                style={{
-                  position: "fixed",
-                  inset: 0,
-                  background: "rgba(2,6,23,0.85)",
-                  zIndex: 1200,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: 20,
-                }}
-              >
-                <button
-                  onClick={() => setPreviewImageUrl("")}
-                  style={{
-                    position: "absolute",
-                    top: 18,
-                    right: 18,
-                    width: 36,
-                    height: 36,
-                    borderRadius: 999,
-                    border: "1px solid rgba(255,255,255,0.35)",
-                    background: "rgba(15,23,42,0.5)",
-                    color: "#fff",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    cursor: "pointer",
-                  }}
-                  aria-label="Close image"
-                >
-                  <FaTimes />
-                </button>
-                <img
-                  src={previewImageUrl}
-                  alt="Preview"
-                  onClick={(event) => event.stopPropagation()}
-                  style={{ maxWidth: "92vw", maxHeight: "90vh", objectFit: "contain", borderRadius: 14 }}
-                />
-              </div>
-            ) : null}
+            <ChatImagePreview src={previewImageUrl} onClose={() => setPreviewImageUrl("")} />
 
-            {imageMenu.open ? (
-              <div
-                onClick={() => setImageMenu({ open: false, message: null })}
-                style={{
-                  position: "fixed",
-                  inset: 0,
-                  background: "rgba(2,6,23,0.45)",
-                  zIndex: 1250,
-                  display: "flex",
-                  alignItems: "flex-end",
-                  justifyContent: "center",
-                  padding: 18,
-                }}
-              >
-                <div
-                  onClick={(event) => event.stopPropagation()}
-                  style={{
-                    width: "min(420px, 96vw)",
-                    background: "#fff",
-                    borderRadius: 16,
-                    border: "1px solid #e2e8f0",
-                    boxShadow: "0 20px 45px rgba(2,6,23,0.3)",
-                    overflow: "hidden",
-                  }}
-                >
-                  <button
-                    onClick={async () => {
-                      await handleDownloadImage(imageMenu.message);
-                      setImageMenu({ open: false, message: null });
-                    }}
-                    style={{ width: "100%", border: "none", background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "14px 16px", textAlign: "left", fontWeight: 700, color: "#0f172a", cursor: "pointer" }}
-                  >
-                    Download image
-                  </button>
-                  {imageMenu?.message?.isAdmin ? (
-                    <button
-                      onClick={() => {
-                        if (imageMenu?.message?.id) {
-                          handleDeleteMessage(imageMenu.message.id);
-                        }
-                        setImageMenu({ open: false, message: null });
-                      }}
-                      style={{ width: "100%", border: "none", background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "14px 16px", textAlign: "left", fontWeight: 700, color: "#b91c1c", cursor: "pointer" }}
-                    >
-                      Delete image
-                    </button>
-                  ) : null}
-                  <button
-                    onClick={() => setImageMenu({ open: false, message: null })}
-                    style={{ width: "100%", border: "none", background: "#fff", padding: "14px 16px", textAlign: "left", fontWeight: 700, color: "#475569", cursor: "pointer" }}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : null}
+            <ChatImageActionMenu
+              open={imageMenu.open}
+              message={imageMenu.message}
+              onDownload={handleDownloadImage}
+              onDelete={handleDeleteMessage}
+              onClose={() => setImageMenu({ open: false, message: null })}
+            />
 
-            {textMenu.open ? (
-              <div
-                onClick={() => setTextMenu({ open: false, message: null })}
-                style={{
-                  position: "fixed",
-                  inset: 0,
-                  background: "rgba(2,6,23,0.45)",
-                  zIndex: 1251,
-                  display: "flex",
-                  alignItems: "flex-end",
-                  justifyContent: "center",
-                  padding: 18,
-                }}
-              >
-                <div
-                  onClick={(event) => event.stopPropagation()}
-                  style={{ width: "min(420px, 96vw)", background: "#fff", borderRadius: 16, border: "1px solid #e2e8f0", boxShadow: "0 20px 45px rgba(2,6,23,0.3)", overflow: "hidden" }}
-                >
-                  <button
-                    onClick={() => {
-                      if (textMenu?.message?.id) {
-                        handleEditMessage(textMenu.message.id);
-                      }
-                      setTextMenu({ open: false, message: null });
-                    }}
-                    style={{ width: "100%", border: "none", background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "14px 16px", textAlign: "left", fontWeight: 700, color: "#0f172a", cursor: "pointer" }}
-                  >
-                    Edit message
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (textMenu?.message?.id) {
-                        handleDeleteMessage(textMenu.message.id);
-                      }
-                      setTextMenu({ open: false, message: null });
-                    }}
-                    style={{ width: "100%", border: "none", background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "14px 16px", textAlign: "left", fontWeight: 700, color: "#b91c1c", cursor: "pointer" }}
-                  >
-                    Delete message
-                  </button>
-                  <button
-                    onClick={() => setTextMenu({ open: false, message: null })}
-                    style={{ width: "100%", border: "none", background: "#fff", padding: "14px 16px", textAlign: "left", fontWeight: 700, color: "#475569", cursor: "pointer" }}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : null}
+            <ChatTextActionMenu
+              open={textMenu.open}
+              message={textMenu.message}
+              onEdit={handleEditMessage}
+              onDelete={handleDeleteMessage}
+              onClose={() => setTextMenu({ open: false, message: null })}
+            />
           </>
         ) : (
           <div style={{ display: "grid", placeItems: "center", flex: 1 }}>

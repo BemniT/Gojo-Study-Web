@@ -4,6 +4,7 @@ import axios from "axios";
 import "../styles/global.css";
 import ProfileAvatar from "../components/ProfileAvatar";
 import { loadSchoolStudentsNode } from "../utils/registerData";
+import { FIREBASE_DATABASE_URL } from "../config";
 
 function StudentChatPage() {
   const location = useLocation();
@@ -23,7 +24,7 @@ function StudentChatPage() {
   })();
   const admin = stored;
   const schoolCode = stored.schoolCode || "";
-  const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
+  const DB_BASE = FIREBASE_DATABASE_URL;
   const DB_URL = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
 
   useEffect(() => {

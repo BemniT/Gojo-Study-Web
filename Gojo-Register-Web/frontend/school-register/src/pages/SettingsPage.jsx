@@ -1,19 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import {
-  FaChalkboardTeacher,
-  FaCog,
-  FaDatabase,
-  FaExternalLinkAlt,
-  FaFileAlt,
-  FaGlobe,
-  FaLock,
-  FaMoon,
-  FaSave,
-  FaSun,
-  FaUserPlus,
-  FaUsers,
-} from "react-icons/fa";
+import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { generateSecret, verify } from "../utils/totp";
 import useDarkMode from "../hooks/useDarkMode";
@@ -27,12 +12,20 @@ import {
   getCachedSchoolSettings,
   getUserRole,
   MANAGED_ROLES,
-  PERMISSION_LABELS,
   persistStoredSession,
   readStoredRegistrar,
 } from "../utils/registerSettings";
 import { persistResolvedSchoolSession, resolveSchoolScope } from "../utils/schoolScope";
 import ProfileAvatar from "../components/ProfileAvatar";
+import SecuritySettingsPanel from "../components/dashboard/settings/SecuritySettingsPanel";
+import SchoolInformationPanel from "../components/dashboard/settings/SchoolInformationPanel";
+import AcademicConfigurationPanel from "../components/dashboard/settings/AcademicConfigurationPanel";
+import UserManagementPanel from "../components/dashboard/settings/UserManagementPanel";
+import DocumentTemplatesPanel from "../components/dashboard/settings/DocumentTemplatesPanel";
+import SystemPreferencesPanel from "../components/dashboard/settings/SystemPreferencesPanel";
+import RolesNotificationsPanel from "../components/dashboard/settings/RolesNotificationsPanel";
+import BackupDataPanel from "../components/dashboard/settings/BackupDataPanel";
+import SystemInformationPanel from "../components/dashboard/settings/SystemInformationPanel";
 import {
   loadGradeManagementNode,
   loadSchoolInfoNode,
@@ -60,10 +53,8 @@ function downloadJsonFile(fileName, data) {
 }
 
 export default function SettingsPage() {
-  const navigate = useNavigate();
   const storedAdmin = readStoredRegistrar();
   const [darkMode, toggleDarkMode] = useDarkMode();
-  const backupInputRef = useRef(null);
   const currentRole = getUserRole(storedAdmin);
   const cachedSettings = getCachedSchoolSettings(storedAdmin.schoolCode || "");
 
@@ -642,7 +633,6 @@ export default function SettingsPage() {
       console.error("Failed to restore backup:", error);
       notify("error", "Failed to restore backup file.");
     } finally {
-      if (backupInputRef.current) backupInputRef.current.value = "";
       setSavingKey("");
     }
   };
@@ -670,10 +660,6 @@ export default function SettingsPage() {
   const sectionStyle = {
     ...panelStyle,
     padding: 18,
-  };
-  const statStyle = {
-    ...panelStyle,
-    padding: 14,
   };
   const labelStyle = {
     display: "block",
@@ -726,17 +712,6 @@ export default function SettingsPage() {
     fontWeight: 800,
     cursor: "pointer",
   };
-  const tinyPillStyle = {
-    display: "inline-flex",
-    alignItems: "center",
-    borderRadius: 999,
-    padding: "5px 10px",
-    fontSize: 11,
-    fontWeight: 800,
-    background: "var(--surface-accent)",
-    color: "var(--accent-strong)",
-    border: "1px solid var(--border-strong)",
-  };
 
   return (
     <div style={pageStyle}>
@@ -774,504 +749,72 @@ export default function SettingsPage() {
 
         <div style={shellStyle}>
           <div style={{ display: "grid", gap: 14 }}>
-            <div style={sectionStyle}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-                <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <FaGlobe style={{ color: "var(--accent-strong)" }} />
-                    <div style={{ fontSize: 18, fontWeight: 900 }}>School Information</div>
-                  </div>
-                  <div style={{ marginTop: 6, fontSize: 13, color: "var(--text-muted)" }}>
-                    Basic school details used in ID cards, documents, certificates, and registrar records.
-                  </div>
-                </div>
-                <button type="button" onClick={saveSchoolInformation} disabled={savingKey === "school"} style={{ ...primaryButtonStyle, opacity: savingKey === "school" ? 0.7 : 1 }}>
-                  <FaSave /> {savingKey === "school" ? "Saving..." : "Save School Info"}
-                </button>
-              </div>
+            <SchoolInformationPanel
+              schoolForm={schoolForm}
+              updateSchoolForm={updateSchoolForm}
+              savingKey={savingKey}
+              saveSchoolInformation={saveSchoolInformation}
+            />
 
-              <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(220px, 260px)", gap: 14 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-                  <div>
-                    <label style={labelStyle}>School Name</label>
-                    <input value={schoolForm.name} onChange={(event) => updateSchoolForm("name", event.target.value)} style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Short Name</label>
-                    <input value={schoolForm.shortName} onChange={(event) => updateSchoolForm("shortName", event.target.value)} style={inputStyle} />
-                  </div>
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <label style={labelStyle}>School Motto</label>
-                    <input value={schoolForm.motto} onChange={(event) => updateSchoolForm("motto", event.target.value)} style={inputStyle} />
-                  </div>
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <label style={labelStyle}>School Logo URL</label>
-                    <input value={schoolForm.logoUrl} onChange={(event) => updateSchoolForm("logoUrl", event.target.value)} style={inputStyle} placeholder="https://..." />
-                  </div>
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <label style={labelStyle}>School Address</label>
-                    <textarea value={schoolForm.addressLine} onChange={(event) => updateSchoolForm("addressLine", event.target.value)} style={textareaStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>City</label>
-                    <input value={schoolForm.city} onChange={(event) => updateSchoolForm("city", event.target.value)} style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Region</label>
-                    <input value={schoolForm.region} onChange={(event) => updateSchoolForm("region", event.target.value)} style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Country</label>
-                    <input value={schoolForm.country} onChange={(event) => updateSchoolForm("country", event.target.value)} style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Phone Number</label>
-                    <input value={schoolForm.phone} onChange={(event) => updateSchoolForm("phone", event.target.value)} style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Email</label>
-                    <input value={schoolForm.email} onChange={(event) => updateSchoolForm("email", event.target.value)} style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Website</label>
-                    <input value={schoolForm.website} onChange={(event) => updateSchoolForm("website", event.target.value)} style={inputStyle} placeholder="https://school.example.com" />
-                  </div>
-                </div>
+            <AcademicConfigurationPanel
+              academicForm={academicForm}
+              updateAcademicForm={updateAcademicForm}
+              savingKey={savingKey}
+              saveAcademicConfiguration={saveAcademicConfiguration}
+              counts={counts}
+              loading={loading}
+            />
 
-                <div style={{ ...panelStyle, padding: 14, background: "linear-gradient(180deg, var(--surface-muted) 0%, var(--surface-panel) 100%)" }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)", marginBottom: 10 }}>Preview</div>
-                  <div style={{ display: "grid", gap: 10 }}>
-                    <img
-                      src={schoolForm.logoUrl || "/default-profile.png"}
-                      alt="School logo"
-                      style={{ width: 92, height: 92, borderRadius: 18, objectFit: "cover", border: "1px solid var(--border-soft)", background: "var(--surface-panel)" }}
-                    />
-                    <div style={{ fontSize: 18, fontWeight: 900 }}>{schoolForm.name || "School Name"}</div>
-                    <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>{schoolForm.motto || "School motto appears here"}</div>
-                    <div style={{ display: "grid", gap: 6, fontSize: 12, color: "var(--text-muted)" }}>
-                      <div>{schoolForm.city || "City"}, {schoolForm.region || "Region"}</div>
-                      <div>{schoolForm.phone || "Phone"}</div>
-                      <div>{schoolForm.email || "Email"}</div>
-                      <div>{schoolForm.website || "Website"}</div>
-                    </div>
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
-                      <span style={tinyPillStyle}>ID Cards</span>
-                      <span style={tinyPillStyle}>Certificates</span>
-                      <span style={tinyPillStyle}>Documents</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <UserManagementPanel counts={counts} loading={loading} />
 
-            <div style={sectionStyle}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-                <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <FaChalkboardTeacher style={{ color: "var(--accent-strong)" }} />
-                    <div style={{ fontSize: 18, fontWeight: 900 }}>Academic Configuration</div>
-                  </div>
-                  <div style={{ marginTop: 6, fontSize: 13, color: "var(--text-muted)" }}>
-                    Control the academic structure, promotion threshold, section naming, and capacity defaults.
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button type="button" onClick={() => navigate("/academic-years")} style={subtleButtonStyle}>Academic Years</button>
-                  <button type="button" onClick={() => navigate("/grede-management")} style={subtleButtonStyle}>Grade Management</button>
-                  <button type="button" onClick={saveAcademicConfiguration} disabled={savingKey === "academic"} style={{ ...primaryButtonStyle, opacity: savingKey === "academic" ? 0.7 : 1 }}>
-                    <FaSave /> {savingKey === "academic" ? "Saving..." : "Save Academic Config"}
-                  </button>
-                </div>
-              </div>
+            <DocumentTemplatesPanel
+              templateForm={templateForm}
+              updateTemplateForm={updateTemplateForm}
+              savingKey={savingKey}
+              saveTemplates={saveTemplates}
+            />
 
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-                <div>
-                  <label style={labelStyle}>Current Academic Year</label>
-                  <input value={academicForm.currentAcademicYear} onChange={(event) => updateAcademicForm("currentAcademicYear", event.target.value)} style={inputStyle} placeholder="2028_2029" />
-                </div>
-                <div>
-                  <label style={labelStyle}>Section Naming System</label>
-                  <select value={academicForm.sectionNamingSystem} onChange={(event) => updateAcademicForm("sectionNamingSystem", event.target.value)} style={inputStyle}>
-                    <option value="Alphabetical (A, B, C)">Alphabetical (A, B, C)</option>
-                    <option value="Numeric (1, 2, 3)">Numeric (1, 2, 3)</option>
-                    <option value="Custom Mixed">Custom Mixed</option>
-                  </select>
-                </div>
-                <div>
-                  <label style={labelStyle}>Promotion Pass Mark (%)</label>
-                  <input value={academicForm.promotionPassMark} onChange={(event) => updateAcademicForm("promotionPassMark", event.target.value)} style={inputStyle} />
-                </div>
-                <div>
-                  <label style={labelStyle}>Default Max Students per Section</label>
-                  <input value={academicForm.maxStudentsPerSection} onChange={(event) => updateAcademicForm("maxStudentsPerSection", event.target.value)} style={inputStyle} />
-                </div>
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12, marginTop: 14 }}>
-                <div style={statStyle}>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>Grade Levels</div>
-                  <div style={{ marginTop: 6, fontSize: 24, fontWeight: 900, color: "var(--accent-strong)" }}>{loading ? "--" : counts.grades}</div>
-                </div>
-                <div style={statStyle}>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>Sections</div>
-                  <div style={{ marginTop: 6, fontSize: 24, fontWeight: 900, color: "var(--success)" }}>{loading ? "--" : counts.sections}</div>
-                </div>
-                <div style={statStyle}>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>Pass Mark</div>
-                  <div style={{ marginTop: 6, fontSize: 24, fontWeight: 900, color: "var(--text-primary)" }}>{academicForm.promotionPassMark}%</div>
-                </div>
-                <div style={statStyle}>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>Max Students</div>
-                  <div style={{ marginTop: 6, fontSize: 24, fontWeight: 900, color: "var(--text-primary)" }}>{academicForm.maxStudentsPerSection}</div>
-                </div>
-              </div>
-            </div>
-
-            <div style={sectionStyle}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-                <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <FaUsers style={{ color: "var(--accent-strong)" }} />
-                    <div style={{ fontSize: 18, fontWeight: 900 }}>User Management</div>
-                  </div>
-                  <div style={{ marginTop: 6, fontSize: 13, color: "var(--text-muted)" }}>
-                    Create users, review counts, and jump to live register pages for students, parents, teachers, and registrar staff.
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button type="button" onClick={() => navigate("/student-register")} style={subtleButtonStyle}><FaUserPlus /> Add Student</button>
-                  <button type="button" onClick={() => navigate("/teacher-register")} style={subtleButtonStyle}><FaUserPlus /> Add Teacher</button>
-                </div>
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 }}>
-                {[
-                  { label: "Students", value: counts.students, action: () => navigate("/students") },
-                  { label: "Parents", value: counts.parents, action: () => navigate("/parents") },
-                  { label: "Teachers", value: counts.teachers, action: () => navigate("/teacher-register") },
-                  { label: "Registrars", value: counts.registerers, action: () => navigate("/registerer-register") },
-                ].map((item) => (
-                  <button
-                    key={item.label}
-                    type="button"
-                    onClick={item.action}
-                    style={{ ...statStyle, textAlign: "left", cursor: "pointer" }}
-                  >
-                    <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>{item.label}</div>
-                    <div style={{ marginTop: 6, fontSize: 26, fontWeight: 900, color: "var(--text-primary)" }}>{loading ? "--" : item.value}</div>
-                    <div style={{ marginTop: 6, fontSize: 12, color: "var(--accent-strong)", fontWeight: 700 }}>Open</div>
-                  </button>
-                ))}
-              </div>
-
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
-                <button type="button" onClick={() => navigate("/parent-register")} style={subtleButtonStyle}>Create Parent</button>
-                <button type="button" onClick={() => navigate("/registerer-register")} style={subtleButtonStyle}>Create Registrar</button>
-                <button type="button" onClick={() => navigate("/all-chat")} style={subtleButtonStyle}>Open Staff Communication</button>
-              </div>
-            </div>
-
-            <div style={sectionStyle}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-                <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <FaFileAlt style={{ color: "var(--accent-strong)" }} />
-                    <div style={{ fontSize: 18, fontWeight: 900 }}>Document Templates</div>
-                  </div>
-                  <div style={{ marginTop: 6, fontSize: 13, color: "var(--text-muted)" }}>
-                    Configure document naming defaults for ID cards, enrollment letters, transfer letters, and certificates.
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button type="button" onClick={() => navigate("/document-generation")} style={subtleButtonStyle}><FaExternalLinkAlt /> Open Document Generation</button>
-                  <button type="button" onClick={saveTemplates} disabled={savingKey === "templates"} style={{ ...primaryButtonStyle, opacity: savingKey === "templates" ? 0.7 : 1 }}>
-                    <FaSave /> {savingKey === "templates" ? "Saving..." : "Save Templates"}
-                  </button>
-                </div>
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-                <div>
-                  <label style={labelStyle}>Student ID Card Title</label>
-                  <input value={templateForm.idCardTitle} onChange={(event) => updateTemplateForm("idCardTitle", event.target.value)} style={inputStyle} />
-                </div>
-                <div>
-                  <label style={labelStyle}>Enrollment Letter Title</label>
-                  <input value={templateForm.enrollmentLetterTitle} onChange={(event) => updateTemplateForm("enrollmentLetterTitle", event.target.value)} style={inputStyle} />
-                </div>
-                <div>
-                  <label style={labelStyle}>Transfer Letter Title</label>
-                  <input value={templateForm.transferLetterTitle} onChange={(event) => updateTemplateForm("transferLetterTitle", event.target.value)} style={inputStyle} />
-                </div>
-                <div>
-                  <label style={labelStyle}>Certificate Title</label>
-                  <input value={templateForm.certificateTitle} onChange={(event) => updateTemplateForm("certificateTitle", event.target.value)} style={inputStyle} />
-                </div>
-                <div>
-                  <label style={labelStyle}>Signatory Name</label>
-                  <input value={templateForm.signatoryName} onChange={(event) => updateTemplateForm("signatoryName", event.target.value)} style={inputStyle} />
-                </div>
-                <div>
-                  <label style={labelStyle}>Footer Note</label>
-                  <input value={templateForm.footerNote} onChange={(event) => updateTemplateForm("footerNote", event.target.value)} style={inputStyle} />
-                </div>
-              </div>
-            </div>
-
-            <div style={sectionStyle}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-                <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <FaLock style={{ color: "var(--accent-strong)" }} />
-                    <div style={{ fontSize: 18, fontWeight: 900 }}>Security</div>
-                  </div>
-                  <div style={{ marginTop: 6, fontSize: 13, color: "var(--text-muted)" }}>
-                    Update registrar account details, password, session timeout, and profile image from one place.
-                  </div>
-                </div>
-                <button type="button" onClick={saveSecurity} disabled={savingKey === "security"} style={{ ...primaryButtonStyle, opacity: savingKey === "security" ? 0.7 : 1 }}>
-                  <FaSave /> {savingKey === "security" ? "Saving..." : "Save Security Settings"}
-                </button>
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "240px minmax(0, 1fr)", gap: 14 }}>
-                <div style={{ ...panelStyle, padding: 14, background: "linear-gradient(180deg, var(--surface-muted) 0%, var(--surface-panel) 100%)" }}>
-                  <ProfileAvatar imageUrl={profileImage} name={securityForm.name || "Register Office"} size={96} style={{ border: "3px solid var(--border-strong)", boxShadow: "var(--shadow-glow)" }} />
-                  <div style={{ marginTop: 12, fontSize: 16, fontWeight: 900 }}>{securityForm.name || "Register Office"}</div>
-                  <div style={{ marginTop: 4, fontSize: 12, color: "var(--text-muted)" }}>@{securityForm.username || "registrar"}</div>
-                  <div style={{ marginTop: 12 }}>
-                    <label style={labelStyle}>Profile Image</label>
-                    <input type="file" accept="image/*" onChange={(event) => setSelectedProfileFile(event.target.files?.[0] || null)} style={{ ...inputStyle, padding: 8 }} />
-                  </div>
-                </div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-                  <div>
-                    <label style={labelStyle}>Display Name</label>
-                    <input value={securityForm.name} onChange={(event) => updateSecurityForm("name", event.target.value)} style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Username</label>
-                    <input value={securityForm.username} onChange={(event) => updateSecurityForm("username", event.target.value)} style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>New Password</label>
-                    <input type="password" value={securityForm.newPassword} onChange={(event) => updateSecurityForm("newPassword", event.target.value)} style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Confirm Password</label>
-                    <input type="password" value={securityForm.confirmPassword} onChange={(event) => updateSecurityForm("confirmPassword", event.target.value)} style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Session Timeout (minutes)</label>
-                    <select value={securityForm.sessionTimeout} onChange={(event) => updateSecurityForm("sessionTimeout", event.target.value)} style={inputStyle}>
-                      <option value="15">15 minutes</option>
-                      <option value="30">30 minutes</option>
-                      <option value="60">60 minutes</option>
-                      <option value="120">120 minutes</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Two-Factor Authentication</label>
-                    <select value={securityForm.twoFactorEnabled ? "enabled" : "disabled"} onChange={(event) => updateSecurityForm("twoFactorEnabled", event.target.value === "enabled")} style={inputStyle}>
-                      <option value="disabled">Disabled</option>
-                      <option value="enabled">Enabled</option>
-                    </select>
-                  </div>
-                </div>
-
-                {securityForm.twoFactorEnabled ? (
-                  <div style={{ ...panelStyle, padding: 14, marginTop: 14 }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)", marginBottom: 10 }}>Authenticator Setup</div>
-                    <div style={{ display: "grid", gap: 12 }}>
-                      <div>
-                        <label style={labelStyle}>Setup Key</label>
-                        <input
-                          value={securityForm.twoFactorSecret || ""}
-                          readOnly
-                          style={{ ...inputStyle, fontFamily: "monospace", letterSpacing: "0.08em" }}
-                        />
-                      </div>
-                      <div>
-                        <label style={labelStyle}>Verification Code</label>
-                        <input
-                          value={twoFactorCode}
-                          onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
-                          placeholder="Enter 6-digit authenticator code"
-                          style={inputStyle}
-                        />
-                      </div>
-                      <div>
-                        <label style={labelStyle}>Recovery Codes</label>
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
-                          {(securityForm.twoFactorRecoveryCodes || []).map((code) => (
-                            <div key={code} style={{ ...panelStyle, padding: "8px 10px", fontFamily: "monospace", fontSize: 12, fontWeight: 800 }}>
-                              {code}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => updateSecurityForm("twoFactorRecoveryCodes", buildRecoveryCodes())}
-                        style={subtleButtonStyle}
-                      >
-                        Regenerate Recovery Codes
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            </div>
+            <SecuritySettingsPanel
+              securityForm={securityForm}
+              updateSecurityForm={updateSecurityForm}
+              profileImage={profileImage}
+              setSelectedProfileFile={setSelectedProfileFile}
+              savingKey={savingKey}
+              saveSecurity={saveSecurity}
+              twoFactorCode={twoFactorCode}
+              setTwoFactorCode={setTwoFactorCode}
+            />
           </div>
 
           <div style={{ display: "grid", gap: 14 }}>
-            <div style={sectionStyle}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                <FaCog style={{ color: "var(--accent-strong)" }} />
-                <div style={{ fontSize: 17, fontWeight: 900 }}>System Preferences</div>
-              </div>
-              <div style={{ display: "grid", gap: 12 }}>
-                <div>
-                  <label style={labelStyle}>Language</label>
-                  <select value={preferencesForm.language} onChange={(event) => updatePreferencesForm("language", event.target.value)} style={inputStyle}>
-                    <option value="English">English</option>
-                    <option value="Afaan Oromo">Afaan Oromo</option>
-                    <option value="Amharic">Amharic</option>
-                  </select>
-                </div>
-                <div>
-                  <label style={labelStyle}>Time Zone</label>
-                  <input value={preferencesForm.timeZone} onChange={(event) => updatePreferencesForm("timeZone", event.target.value)} style={inputStyle} />
-                </div>
-                <div>
-                  <label style={labelStyle}>Date Format</label>
-                  <select value={preferencesForm.dateFormat} onChange={(event) => updatePreferencesForm("dateFormat", event.target.value)} style={inputStyle}>
-                    <option value="YYYY-MM-DD">YYYY-MM-DD</option>
-                    <option value="DD/MM/YYYY">DD/MM/YYYY</option>
-                    <option value="MM/DD/YYYY">MM/DD/YYYY</option>
-                  </select>
-                </div>
-                <div>
-                  <label style={labelStyle}>Default Page</label>
-                  <select value={preferencesForm.defaultPage} onChange={(event) => updatePreferencesForm("defaultPage", event.target.value)} style={inputStyle}>
-                    <option value="/dashboard">Dashboard</option>
-                    <option value="/overview">Overview</option>
-                    <option value="/students">Students</option>
-                    <option value="/document-generation">Document Generation</option>
-                  </select>
-                </div>
-                <button type="button" onClick={toggleDarkMode} style={{ ...subtleButtonStyle, justifyContent: "space-between" }}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>{darkMode ? <FaMoon /> : <FaSun />} Theme</span>
-                  <span>{darkMode ? "Dark" : "Light"}</span>
-                </button>
-                <button type="button" onClick={savePreferences} disabled={savingKey === "preferences"} style={{ ...primaryButtonStyle, opacity: savingKey === "preferences" ? 0.7 : 1 }}>
-                  <FaSave /> {savingKey === "preferences" ? "Saving..." : "Save Preferences"}
-                </button>
-              </div>
-            </div>
-
-            <div style={sectionStyle}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <FaUsers style={{ color: "var(--accent-strong)" }} />
-                  <div style={{ fontSize: 17, fontWeight: 900 }}>Roles & Notifications</div>
-                </div>
-                <button type="button" onClick={savePermissions} disabled={savingKey === "permissions"} style={{ ...primaryButtonStyle, opacity: savingKey === "permissions" ? 0.7 : 1 }}>
-                  <FaSave /> {savingKey === "permissions" ? "Saving..." : "Save Role Access"}
-                </button>
-              </div>
-
-              <div style={{ display: "grid", gap: 10, marginBottom: 14 }}>
-                {[
-                  { key: "emailNotifications", label: "Email notifications" },
-                  { key: "systemAlerts", label: "System alerts" },
-                  { key: "deadlineReminders", label: "Deadline reminders" },
-                  { key: "registrationAlerts", label: "Registration alerts" },
-                ].map((item) => (
-                  <label key={item.key} style={{ ...panelStyle, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                    <span style={{ fontSize: 13, fontWeight: 700 }}>{item.label}</span>
-                    <input type="checkbox" checked={Boolean(preferencesForm[item.key])} onChange={(event) => updatePreferencesForm(item.key, event.target.checked)} />
-                  </label>
-                ))}
-              </div>
-
-              <div style={{ ...panelStyle, padding: 12, marginBottom: 12 }}>
-                <label style={labelStyle}>Manage Role Access</label>
-                <select value={selectedRole} onChange={(event) => setSelectedRole(event.target.value)} style={inputStyle}>
-                  {MANAGED_ROLES.map((role) => (
-                    <option key={role} value={role}>
-                      {role.charAt(0).toUpperCase()}{role.slice(1)}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
-                {Object.entries(PERMISSION_LABELS).map(([key, label]) => (
-                  <label key={key} style={{ ...panelStyle, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                    <span style={{ fontSize: 13, fontWeight: 700 }}>{label}</span>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(permissionsForm[selectedRole]?.[key])}
-                      onChange={(event) => updateRolePermission(selectedRole, key, event.target.checked)}
-                    />
-                  </label>
-                ))}
-              </div>
-
-              <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6, marginTop: 12 }}>
-                Role access is enforced in navigation, protected routes, and default-page redirects for new sessions.
-              </div>
-            </div>
-
-            <div style={sectionStyle}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                <FaDatabase style={{ color: "var(--accent-strong)" }} />
-                <div style={{ fontSize: 17, fontWeight: 900 }}>Backup & Data</div>
-              </div>
-              <div style={{ display: "grid", gap: 10 }}>
-                <button type="button" onClick={exportSchoolData} disabled={savingKey === "backupExport"} style={subtleButtonStyle}>
-                  <FaExternalLinkAlt /> Export School Data
-                </button>
-                <button type="button" onClick={createCloudSnapshot} disabled={savingKey === "backupSnapshot"} style={subtleButtonStyle}>
-                  <FaDatabase /> Create Cloud Snapshot
-                </button>
-                <button type="button" onClick={() => backupInputRef.current?.click()} disabled={savingKey === "backupRestore"} style={subtleButtonStyle}>
-                  <FaDatabase /> Restore From Backup File
-                </button>
-                <button type="button" onClick={() => navigate("/academic-years")} style={subtleButtonStyle}>
-                  <FaDatabase /> Open Academic Archives
-                </button>
-                <button type="button" onClick={() => window.open(`${dbRoot}/YearHistory.json`, "_blank", "noopener,noreferrer")} style={subtleButtonStyle}>
-                  <FaExternalLinkAlt /> View YearHistory Snapshot
-                </button>
-                <input ref={backupInputRef} type="file" accept="application/json" onChange={restoreSchoolBackup} style={{ display: "none" }} />
-              </div>
-              <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-muted)" }}>
-                Cloud snapshots: {backupStats.snapshots}. Latest snapshot: {backupStats.lastSnapshot ? formatDateForSettings(Number(backupStats.lastSnapshot), preferencesForm) : "Not available"}.
-              </div>
-            </div>
-
-            <div style={sectionStyle}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                <FaFileAlt style={{ color: "var(--accent-strong)" }} />
-                <div style={{ fontSize: 17, fontWeight: 900 }}>System Information</div>
-              </div>
-              <div style={{ display: "grid", gap: 10 }}>
-                {[
-                  { label: "System version", value: systemInfo.version },
-                  { label: "Server status", value: systemInfo.serverStatus },
-                  { label: "Last update", value: systemInfo.lastUpdate },
-                  { label: "Storage usage", value: systemInfo.storageUsage },
-                ].map((item) => (
-                  <div key={item.label} style={{ ...panelStyle, padding: "10px 12px" }}>
-                    <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>{item.label}</div>
-                    <div style={{ marginTop: 4, fontSize: 13, color: "var(--text-primary)", fontWeight: 800 }}>{item.value}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <SystemPreferencesPanel
+              preferencesForm={preferencesForm}
+              updatePreferencesForm={updatePreferencesForm}
+              savingKey={savingKey}
+              savePreferences={savePreferences}
+              darkMode={darkMode}
+              toggleDarkMode={toggleDarkMode}
+            />
+            <RolesNotificationsPanel
+              preferencesForm={preferencesForm}
+              updatePreferencesForm={updatePreferencesForm}
+              permissionsForm={permissionsForm}
+              updateRolePermission={updateRolePermission}
+              selectedRole={selectedRole}
+              setSelectedRole={setSelectedRole}
+              savingKey={savingKey}
+              savePermissions={savePermissions}
+            />
+            <BackupDataPanel
+              savingKey={savingKey}
+              exportSchoolData={exportSchoolData}
+              createCloudSnapshot={createCloudSnapshot}
+              onRestoreFile={restoreSchoolBackup}
+              dbRoot={dbRoot}
+              backupStats={backupStats}
+              preferencesForm={preferencesForm}
+            />
+            <SystemInformationPanel systemInfo={systemInfo} />
           </div>
         </div>
       </div>

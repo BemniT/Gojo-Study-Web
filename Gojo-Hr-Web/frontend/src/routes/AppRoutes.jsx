@@ -104,6 +104,7 @@ export default function AppRoutes() {
         <Route path="/employees/attendance" element={<EmployeesAttendance />} />
         <Route path="/employees/terminated" element={<TerminatedEmployees />} />
         <Route path="/employees/:id" element={<EmployeeDetail />} />
+        <Route path="/register" element={<Register />} />
         <Route path="/all-chat" element={<AllChat />} />
         <Route path="/settings" element={<HRSettings />} />
       </Routes>

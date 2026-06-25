@@ -1,550 +1,152 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { FaArrowLeft, FaPaperPlane } from "react-icons/fa";
-import { get, onValue, push, ref, set, update } from "firebase/database";
-import axios from "axios";
 import "../styles/global.css";
 import ProfileAvatar from "../components/ProfileAvatar";
-import { db } from "../firebase";
-import { buildSchoolRtdbBase } from "../api/rtdbScope";
-import {
-  buildConversationSummaryMap,
-  fetchConversationSummaries,
-  loadSchoolParentsNode,
-  loadSchoolStudentsNode,
-  loadSchoolTeachersNode,
-  loadUserRecordsByIds,
-} from "../utils/registerData";
+import useRegistrarSession from "../hooks/auth/useRegistrarSession";
+import useAllChatContacts from "../hooks/chat/useAllChatContacts";
+import useAllChatThread from "../hooks/chat/useAllChatThread";
+
+const pageShellStyle = {
+  display: "flex",
+  height: "100vh",
+  background: "linear-gradient(180deg, var(--page-bg) 0%, var(--page-bg-secondary) 100%)",
+};
+
+const sidebarStyle = {
+  width: 300,
+  background: "var(--surface-panel)",
+  borderRight: "1px solid var(--border-soft)",
+  overflowY: "auto",
+  padding: 15,
+  boxShadow: "var(--shadow-soft)",
+};
+
+const searchInputStyle = {
+  flex: 1,
+  padding: 8,
+  borderRadius: 20,
+  border: "1px solid var(--input-border)",
+  outline: "none",
+  background: "var(--input-bg)",
+  color: "var(--text-primary)",
+};
+
+const tabButtonStyle = (isActive) => ({
+  flex: 1,
+  padding: 8,
+  borderRadius: 20,
+  border: "1px solid transparent",
+  cursor: "pointer",
+  background: isActive ? "var(--accent-strong)" : "var(--surface-muted)",
+  color: isActive ? "#fff" : "var(--text-primary)",
+  fontWeight: 700,
+});
+
+const threadHeaderStyle = {
+  padding: 10,
+  borderBottom: "1px solid var(--border-soft)",
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  background: "var(--surface-muted)",
+  borderRadius: 10,
+  marginBottom: 10,
+};
+
+const threadBodyStyle = {
+  flex: 1,
+  overflowY: "auto",
+  padding: 15,
+  display: "flex",
+  flexDirection: "column",
+  gap: 10,
+  background: "var(--surface-overlay)",
+  borderRadius: 10,
+  border: "1px solid var(--border-soft)",
+};
+
+const composerInputStyle = {
+  flex: 1,
+  padding: "12px 16px",
+  borderRadius: 30,
+  border: "1px solid var(--input-border)",
+  outline: "none",
+  background: "var(--input-bg)",
+  color: "var(--text-primary)",
+};
+
+const actionButtonStyle = {
+  background: "var(--accent-strong)",
+  color: "#fff",
+  border: "none",
+  padding: "6px 10px",
+  borderRadius: 6,
+  cursor: "pointer",
+};
+
+const formatTime = (timestamp) => {
+  if (!timestamp) return "";
+  return new Date(Number(timestamp)).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
 
 function AllChat() {
   const location = useLocation();
   const navigate = useNavigate();
-
-  const stored = (() => {
-    const parse = (raw) => {
-      if (!raw) return null;
-      try {
-        return JSON.parse(raw);
-      } catch {
-        return null;
-      }
-    };
-
-    return parse(localStorage.getItem("registrar")) || parse(localStorage.getItem("admin")) || {};
-  })();
-
-  const financeUserId = stored.userId || "";
-  const financeAccountId = stored.financeId || stored.adminId || "";
-  const schoolCode = stored.schoolCode || "";
-  const DB_ROOT = buildSchoolRtdbBase(schoolCode);
+  const { finance, schoolCode, DB_ROOT } = useRegistrarSession();
+  const financeUserId = finance.userId || "";
+  const financeAccountId = finance.financeId || "";
   const DB_PATH = schoolCode ? `Platform1/Schools/${schoolCode}` : "";
 
-  const isSelfUser = (value) => {
-    const target = String(value || "");
-    if (!target) return false;
-    return [financeUserId, financeAccountId]
-      .map((v) => String(v || ""))
-      .filter(Boolean)
-      .includes(target);
-  };
-
-  const passedUser = useMemo(() => {
-    const normalize = (u, fallbackType = "student") => {
-      if (!u?.userId) return null;
-      if (isSelfUser(u.userId) || isSelfUser(u.id) || isSelfUser(u.financeId) || isSelfUser(u.adminId)) {
-        return null;
-      }
-      return {
-        ...u,
-        type: u?.type || fallbackType,
-        name: u?.name || u?.username || "User",
-        profileImage: u?.profileImage || "/default-profile.png",
-      };
-    };
-
-    if (location.state?.user) return normalize(location.state.user, location.state?.user?.type || "student");
-
-    if (location.state?.teacher) {
-      const t = location.state.teacher;
-      return normalize(
-        {
-          userId: t?.userId || "",
-          name: t?.name || t?.username || "Teacher",
-          profileImage: t?.profileImage || "/default-profile.png",
-          type: location.state?.userType || "teacher",
-        },
-        "teacher"
-      );
-    }
-
-    return null;
-  }, [location.state, financeUserId, financeAccountId]);
-
-  const getChatKey = (a, b) => [String(a || ""), String(b || "")].sort().join("_");
-
-  const getChatKeyCandidates = (a, b) => {
-    const left = String(a || "");
-    const right = String(b || "");
-    const sorted = getChatKey(left, right);
-    const direct = `${left}_${right}`;
-    const reverse = `${right}_${left}`;
-    return [sorted, direct, reverse].filter((v, i, arr) => v && arr.indexOf(v) === i);
-  };
-
-  const [students, setStudents] = useState([]);
-  const [parents, setParents] = useState([]);
-  const [teachers, setTeachers] = useState([]);
-  const [selectedTab, setSelectedTab] = useState(
-    passedUser?.type === "parent" || passedUser?.type === "teacher" ? passedUser.type : "student"
-  );
-  const [selectedChatUser, setSelectedChatUser] = useState(passedUser);
-
-  const [messages, setMessages] = useState([]);
-  const [messageInput, setMessageInput] = useState("");
-  const [editingMsgId, setEditingMsgId] = useState(null);
-  const [activeMessageId, setActiveMessageId] = useState(null);
-  const [typing, setTyping] = useState(false);
-  const [lastSeen, setLastSeen] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
 
-  const chatEndRef = useRef(null);
-  const typingTimeoutRef = useRef(null);
+  const {
+    students,
+    parents,
+    teachers,
+    selectedTab,
+    setSelectedTab,
+    selectedChatUser,
+    setSelectedChatUser,
+  } = useAllChatContacts({
+    DB_ROOT,
+    schoolCode,
+    financeUserId,
+    financeAccountId,
+    location,
+  });
 
-  const normalizedChatKey = useMemo(() => {
-    if (!selectedChatUser?.userId || !financeUserId) return null;
-    return getChatKey(financeUserId, selectedChatUser.userId);
-  }, [selectedChatUser, financeUserId]);
-  const [activeChatKey, setActiveChatKey] = useState(null);
-
-  useEffect(() => {
-    if (!passedUser?.userId) return;
-    if (isSelfUser(passedUser.userId) || isSelfUser(passedUser.id)) return;
-    setSelectedChatUser((prev) =>
-      String(prev?.userId || "") === String(passedUser.userId) ? prev : passedUser
-    );
-    if (["student", "parent", "teacher"].includes(passedUser?.type)) {
-      setSelectedTab(passedUser.type);
-    }
-  }, [passedUser, financeUserId, financeAccountId]);
-
-  const updateUnreadForSelected = async (userId) => {
-    if (!financeUserId || !userId) return;
-    const key = activeChatKey || getChatKey(financeUserId, userId);
-    try {
-      await axios.patch(`${DB_ROOT}/Chats/${key}/unread.json`, {
-        [financeUserId]: 0,
-      });
-    } catch {
-      // ignore
-    }
-  };
-
-  useEffect(() => {
-    const fetchPeople = async () => {
-      if (!financeUserId) return;
-
-      try {
-        const [studentsData, parentsData, teachersData] = await Promise.all([
-          loadSchoolStudentsNode({ rtdbBase: DB_ROOT }),
-          loadSchoolParentsNode({ rtdbBase: DB_ROOT }),
-          loadSchoolTeachersNode({ rtdbBase: DB_ROOT }),
-        ]);
-
-        // Load chat summaries first so we know which contacts have actually chatted
-        const summaries = await fetchConversationSummaries({
-          rtdbBase: DB_ROOT,
-          currentUserId: financeUserId,
-          includeWithoutLastMessage: true,
-        });
-        const summariesByUserId = buildConversationSummaryMap(summaries);
-
-        // Build the full set of user IDs across all directory nodes
-        const allDirectoryUserIds = Array.from(
-          new Set(
-            [...Object.values(studentsData || {}), ...Object.values(parentsData || {}), ...Object.values(teachersData || {})]
-              .map((record) => String(record?.userId || "").trim())
-              .filter(Boolean)
-          )
-        );
-
-        // Only fetch user records for contacts who have summaries or whose IDs are ≤ 200
-        // This avoids downloading the full 22 MB Users node for 11 K+ users
-        const summaryUserIds = new Set(
-          summaries.map((s) => String(s?.contact?.userId || s?.otherUserId || "").trim()).filter(Boolean)
-        );
-        const targetUserIds = allDirectoryUserIds.length <= 200
-          ? allDirectoryUserIds
-          : allDirectoryUserIds.filter((uid) => summaryUserIds.has(uid));
-
-        const usersById = await loadUserRecordsByIds({
-          rtdbBase: DB_ROOT,
-          schoolCode,
-          userIds: targetUserIds,
-        });
-
-        const findUserNode = (userId) => usersById[String(userId || "").trim()] || {};
-
-        const buildList = (sourceMap, type) => {
-          const rows = Object.entries(sourceMap || {})
-            .map(([id, node]) => {
-              const userId = node?.userId;
-              if (!userId) return null;
-              if (isSelfUser(userId) || isSelfUser(id) || isSelfUser(node?.financeId) || isSelfUser(node?.adminId)) {
-                return null;
-              }
-
-              const user = findUserNode(userId);
-              const summary = summariesByUserId[String(userId || "").trim()] || null;
-              const unread = Number(summary?.unreadForMe || 0);
-
-              return {
-                id,
-                type,
-                userId,
-                name: user.name || user.username || `${type} ${id}`,
-                profileImage: user.profileImage || "/default-profile.png",
-                lastSeen: user.lastSeen || null,
-                lastMsgTime: Number(summary?.lastMessageTime || 0),
-                lastMsgText: summary?.lastMessageText || "",
-                unread,
-              };
-            })
-            .filter(Boolean);
-
-          const uniqueByUserId = new Map();
-          for (const row of rows) {
-            const key = String(row.userId || "");
-            const existing = uniqueByUserId.get(key);
-            if (!existing) {
-              uniqueByUserId.set(key, row);
-              continue;
-            }
-
-            const shouldReplace = Number(row.lastMsgTime || 0) >= Number(existing.lastMsgTime || 0);
-            const merged = shouldReplace ? { ...existing, ...row } : { ...row, ...existing };
-            merged.unread = Math.max(Number(existing.unread || 0), Number(row.unread || 0));
-            merged.lastMsgTime = Math.max(
-              Number(existing.lastMsgTime || 0),
-              Number(row.lastMsgTime || 0)
-            );
-            uniqueByUserId.set(key, merged);
-          }
-
-          return Array.from(uniqueByUserId.values()).sort(
-            (a, b) => Number(b.lastMsgTime || 0) - Number(a.lastMsgTime || 0)
-          );
-        };
-
-        const studentList = buildList(studentsData, "student");
-        const parentList = buildList(parentsData, "parent");
-        const teacherList = buildList(teachersData, "teacher");
-
-        setStudents(studentList);
-        setParents(parentList);
-        setTeachers(teacherList);
-
-        const allUsers = [...studentList, ...parentList, ...teacherList];
-        const selectedIsValid = allUsers.some(
-          (u) => String(u?.userId || "") === String(selectedChatUser?.userId || "")
-        );
-
-        const hasExplicitTarget = Boolean(passedUser?.userId || location.state?.studentId);
-
-        if (!selectedChatUser || !selectedIsValid) {
-          if (location.state?.studentId) {
-            const matchedStudent = studentList.find(
-              (s) => String(s.id) === String(location.state.studentId)
-            );
-            if (matchedStudent) {
-              setSelectedTab("student");
-              setSelectedChatUser(matchedStudent);
-              return;
-            }
-          }
-
-          if (hasExplicitTarget) {
-            const first = studentList[0] || parentList[0] || teacherList[0] || null;
-            setSelectedChatUser(first);
-          } else {
-            setSelectedChatUser(null);
-          }
-        }
-      } catch (err) {
-        console.error("Failed to fetch chat users:", err);
-      }
-    };
-
-    fetchPeople();
-  }, [DB_ROOT, financeUserId, financeAccountId, location.state?.studentId, passedUser?.userId, selectedChatUser]);
-
-  useEffect(() => {
-    if (!financeUserId || !selectedChatUser?.userId || !normalizedChatKey) {
-      setActiveChatKey(null);
-      return;
-    }
-
-    let mounted = true;
-
-    const resolveKey = async () => {
-      const candidates = getChatKeyCandidates(financeUserId, selectedChatUser.userId);
-
-      for (const key of candidates) {
-        const basePath = DB_PATH ? `${DB_PATH}/Chats/${key}` : `Chats/${key}`;
-        try {
-          const snap = await get(ref(db, basePath));
-          if (snap.exists()) {
-            if (mounted) setActiveChatKey(key);
-            return;
-          }
-        } catch {
-          // try next candidate
-        }
-      }
-
-      if (mounted) setActiveChatKey(normalizedChatKey);
-    };
-
-    resolveKey();
-
-    return () => {
-      mounted = false;
-    };
-  }, [DB_PATH, financeUserId, normalizedChatKey, selectedChatUser]);
-
-  useEffect(() => {
-    if (!activeChatKey || !selectedChatUser?.userId || !financeUserId) return;
-
-    const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
-    const userPath = DB_PATH ? `${DB_PATH}/Users/${selectedChatUser.userId}/lastSeen` : `Users/${selectedChatUser.userId}/lastSeen`;
-
-    const messagesRef = ref(db, `${basePath}/messages`);
-    const typingRef = ref(db, `${basePath}/typing`);
-    const lastSeenRef = ref(db, userPath);
-
-    const unsubMessages = onValue(messagesRef, (snapshot) => {
-      const data = snapshot.val() || {};
-      const mapped = Object.entries(data)
-        .map(([id, m]) => ({
-          ...m,
-          id,
-          sender: String(m.senderId) === String(financeUserId) ? "registerer" : "user",
-        }))
-        .sort((a, b) => Number(a.timeStamp || 0) - Number(b.timeStamp || 0));
-      setMessages(mapped);
-    });
-
-    const unsubTyping = onValue(typingRef, (snapshot) => {
-      const val = snapshot.val();
-      setTyping(Boolean(val?.userId) && String(val.userId) === String(selectedChatUser.userId));
-    });
-
-    const unsubLastSeen = onValue(lastSeenRef, (snapshot) => {
-      setLastSeen(snapshot.val());
-    });
-
-    updateUnreadForSelected(selectedChatUser.userId);
-
-    return () => {
-      unsubMessages();
-      unsubTyping();
-      unsubLastSeen();
-    };
-  }, [activeChatKey, selectedChatUser, financeUserId, DB_PATH]);
-
-  useEffect(() => {
-    return () => {
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    };
-  }, []);
-
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, typing]);
-
-  const sendMessage = async () => {
-    if (!messageInput.trim() || !activeChatKey || !selectedChatUser?.userId || !financeUserId) return;
-
-    const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
-    const messagesRef = ref(db, `${basePath}/messages`);
-    const chatRef = ref(db, basePath);
-
-    if (editingMsgId) {
-      await update(ref(db, `${basePath}/messages/${editingMsgId}`), {
-        text: messageInput,
-        edited: true,
-      });
-      setEditingMsgId(null);
-      setMessageInput("");
-      return;
-    }
-
-    const payload = {
-      senderId: financeUserId,
-      receiverId: selectedChatUser.userId,
-      type: "text",
-      text: messageInput,
-      imageUrl: null,
-      replyTo: null,
-      seen: false,
-      edited: false,
-      deleted: false,
-      timeStamp: Date.now(),
-    };
-
-    const msgRef = push(messagesRef);
-    await set(msgRef, payload);
-
-    let unreadNode = {};
-    try {
-      const unreadSnap = await get(ref(db, `${basePath}/unread`));
-      unreadNode = unreadSnap.val() || {};
-    } catch {
-      unreadNode = {};
-    }
-
-    const nextUnreadForReceiver = Number(unreadNode[selectedChatUser.userId] || 0) + 1;
-
-    await update(chatRef, {
-      participants: {
-        [financeUserId]: true,
-        [selectedChatUser.userId]: true,
-      },
-      lastMessage: { ...payload, messageId: msgRef.key },
-      unread: {
-        ...(unreadNode || {}),
-        [financeUserId]: 0,
-        [selectedChatUser.userId]: nextUnreadForReceiver,
-      },
-      typing: null,
-    });
-
-    setMessageInput("");
-  };
-
-  const deleteMessage = async (msgId) => {
-    if (!activeChatKey || !msgId) return;
-    const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
-    await update(ref(db, `${basePath}/messages/${msgId}`), { deleted: true });
-  };
-
-  const handleTyping = async (e) => {
-    const text = e.target.value;
-    setMessageInput(text);
-
-    if (!activeChatKey || !financeUserId) return;
-    const basePath = DB_PATH ? `${DB_PATH}/Chats/${activeChatKey}` : `Chats/${activeChatKey}`;
-    const typingRef = ref(db, `${basePath}/typing`);
-
-    if (!text.trim()) {
-      await set(typingRef, { userId: null });
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-      return;
-    }
-
-    await set(typingRef, { userId: financeUserId });
-
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    typingTimeoutRef.current = setTimeout(async () => {
-      await set(typingRef, { userId: null });
-    }, 1800);
-  };
-
-  const formatTime = (timestamp) => {
-    if (!timestamp) return "";
-    return new Date(Number(timestamp)).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  };
+  const {
+    messages,
+    messageInput,
+    setMessageInput,
+    editingMsgId,
+    setEditingMsgId,
+    activeMessageId,
+    setActiveMessageId,
+    typing,
+    lastSeen,
+    chatEndRef,
+    sendMessage,
+    deleteMessage,
+    handleTyping,
+    updateUnreadForSelected,
+  } = useAllChatThread({
+    DB_ROOT,
+    DB_PATH,
+    financeUserId,
+    selectedChatUser,
+  });
 
   const activeList =
-    selectedTab === "student"
-      ? students
-      : selectedTab === "parent"
-      ? parents
-      : teachers;
+    selectedTab === "student" ? students : selectedTab === "parent" ? parents : teachers;
 
   const filteredList = activeList.filter((u) =>
     String(u.name || "").toLowerCase().includes(searchQuery.toLowerCase())
   );
-
-  const pageShellStyle = {
-    display: "flex",
-    height: "100vh",
-    background: "linear-gradient(180deg, var(--page-bg) 0%, var(--page-bg-secondary) 100%)",
-  };
-
-  const sidebarStyle = {
-    width: 300,
-    background: "var(--surface-panel)",
-    borderRight: "1px solid var(--border-soft)",
-    overflowY: "auto",
-    padding: 15,
-    boxShadow: "var(--shadow-soft)",
-  };
-
-  const searchInputStyle = {
-    flex: 1,
-    padding: 8,
-    borderRadius: 20,
-    border: "1px solid var(--input-border)",
-    outline: "none",
-    background: "var(--input-bg)",
-    color: "var(--text-primary)",
-  };
-
-  const tabButtonStyle = (isActive) => ({
-    flex: 1,
-    padding: 8,
-    borderRadius: 20,
-    border: "1px solid transparent",
-    cursor: "pointer",
-    background: isActive ? "var(--accent-strong)" : "var(--surface-muted)",
-    color: isActive ? "#fff" : "var(--text-primary)",
-    fontWeight: 700,
-  });
-
-  const threadHeaderStyle = {
-    padding: 10,
-    borderBottom: "1px solid var(--border-soft)",
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    background: "var(--surface-muted)",
-    borderRadius: 10,
-    marginBottom: 10,
-  };
-
-  const threadBodyStyle = {
-    flex: 1,
-    overflowY: "auto",
-    padding: 15,
-    display: "flex",
-    flexDirection: "column",
-    gap: 10,
-    background: "var(--surface-overlay)",
-    borderRadius: 10,
-    border: "1px solid var(--border-soft)",
-  };
-
-  const composerInputStyle = {
-    flex: 1,
-    padding: "12px 16px",
-    borderRadius: 30,
-    border: "1px solid var(--input-border)",
-    outline: "none",
-    background: "var(--input-bg)",
-    color: "var(--text-primary)",
-  };
-
-  const actionButtonStyle = {
-    background: "var(--accent-strong)",
-    color: "#fff",
-    border: "none",
-    padding: "6px 10px",
-    borderRadius: 6,
-    cursor: "pointer",
-  };
 
   const renderUserList = (users) =>
     users.map((u) => (
@@ -601,10 +203,7 @@ function AllChat() {
     <div style={pageShellStyle}>
       <div style={sidebarStyle}>
         <div style={{ display: "flex", alignItems: "center", marginBottom: 15 }}>
-          <button
-            onClick={() => navigate(-1)}
-            style={{ ...actionButtonStyle, marginRight: 10 }}
-          >
+          <button onClick={() => navigate(-1)} style={{ ...actionButtonStyle, marginRight: 10 }}>
             <FaArrowLeft />
           </button>
           <input
@@ -618,13 +217,7 @@ function AllChat() {
 
         <div style={{ display: "flex", marginBottom: 15, gap: 5 }}>
           {["student", "parent", "teacher"].map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setSelectedTab(tab)}
-              style={{
-                ...tabButtonStyle(selectedTab === tab),
-              }}
-            >
+            <button key={tab} onClick={() => setSelectedTab(tab)} style={tabButtonStyle(selectedTab === tab)}>
               {tab.charAt(0).toUpperCase() + tab.slice(1)}
             </button>
           ))}

@@ -13,7 +13,7 @@ import re
 import tempfile
 from werkzeug.utils import secure_filename
 from firebase_admin import storage
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()

@@ -66,6 +66,68 @@ const isRecordObject = (value) => {
 
 export const normalizeIdentifier = (value) => String(value || "").trim();
 
+/**
+ * Flatten parent links from a student node — pulls from both the top-level
+ * `parents` map and `parentGuardianInformation.parents` (legacy shape),
+ * normalizes field names, and dedupes by parentId|userId.
+ */
+export const normalizeParentLinks = (studentNode = {}) => {
+  const links = [];
+
+  Object.entries(studentNode?.parents || {}).forEach(([parentId, parentLink]) => {
+    links.push({
+      parentId: String(parentId || parentLink?.parentId || "").trim(),
+      userId: String(parentLink?.userId || "").trim(),
+      relationship: parentLink?.relationship || null,
+      name: parentLink?.name || null,
+      phone: parentLink?.phone || null,
+      profileImage: parentLink?.profileImage || null,
+    });
+  });
+
+  const guardianParents = Array.isArray(studentNode?.parentGuardianInformation?.parents)
+    ? studentNode.parentGuardianInformation.parents
+    : Object.values(studentNode?.parentGuardianInformation?.parents || {});
+
+  guardianParents.forEach((parentLink) => {
+    const systemInfo = parentLink?.systemAccountInformation || {};
+    links.push({
+      parentId: String(parentLink?.parentId || "").trim(),
+      userId: String(parentLink?.userId || systemInfo?.userId || "").trim(),
+      relationship: parentLink?.relationship || null,
+      name:
+        parentLink?.parentFullName ||
+        parentLink?.name ||
+        systemInfo?.username ||
+        null,
+      phone:
+        parentLink?.phone ||
+        parentLink?.parentPhone ||
+        parentLink?.phoneNumber ||
+        null,
+      profileImage: parentLink?.profileImage || null,
+    });
+  });
+
+  const deduped = new Map();
+  links.forEach((link) => {
+    const key = String(link.parentId || link.userId || "").trim();
+    if (!key) return;
+
+    const existing = deduped.get(key) || {};
+    deduped.set(key, {
+      parentId: link.parentId || existing.parentId || "",
+      userId: link.userId || existing.userId || "",
+      relationship: link.relationship || existing.relationship || null,
+      name: link.name || existing.name || null,
+      phone: link.phone || existing.phone || null,
+      profileImage: link.profileImage || existing.profileImage || null,
+    });
+  });
+
+  return Array.from(deduped.values());
+};
+
 export const buildSchoolRtdbBase = (schoolCode) => {
   const normalizedSchoolCode = normalizeIdentifier(schoolCode);
   return normalizedSchoolCode

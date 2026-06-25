@@ -16,7 +16,14 @@ import {
   FaUsers,
 } from "react-icons/fa";
 import axios from "axios";
-import { BACKEND_BASE } from "../config";
+import { BACKEND_BASE , FIREBASE_DATABASE_URL} from "../config";
+import useRegistrarSession from "../hooks/auth/useRegistrarSession";
+import usePromotionData from "../hooks/promotion/usePromotionData";
+import useReRegisterDraft from "../hooks/promotion/useReRegisterDraft";
+import useStudentReview from "../hooks/promotion/useStudentReview";
+import useDecisions from "../hooks/promotion/useDecisions";
+import ReRegisterModal from "../components/dashboard/promotion/ReRegisterModal";
+import Step2StudentReview from "../components/dashboard/promotion/Step2StudentReview";
 import RegisterSidebar from "../components/RegisterSidebar";
 import ProfileAvatar from "../components/ProfileAvatar";
 import {
@@ -45,37 +52,11 @@ const ACTIONS = {
   withdraw: "withdraw",
 };
 
-const isFinalGrade = (grade, maxGrade) => Number(grade) >= Number(maxGrade);
 
 const normalizeYearKey = (value) => String(value || "").trim();
 
 const yearLabel = (key) => String(key || "").replace("_", "/");
 
-const buildNextYearKey = (fromYearKey) => {
-  const safe = normalizeYearKey(fromYearKey);
-  const m = safe.match(/^(\d{4})_(\d{4})$/);
-  if (!m) return "";
-  const y1 = Number(m[1]);
-  const y2 = Number(m[2]);
-  return `${y1 + 1}_${y2 + 1}`;
-};
-
-const isAlreadyReRegisteredToYear = (studentRoot = {}, targetYear = "") => {
-  const year = String(targetYear || "").trim();
-  if (!year) return false;
-
-  const rootAcademicYear = String(studentRoot?.academicYear || "").trim();
-  const basicAcademicYear = String(studentRoot?.basicStudentInformation?.academicYear || "").trim();
-  const recordsToYear = studentRoot?.records?.[year] || null;
-  const hasReRegisterStamp = !!studentRoot?.reRegisteredAt;
-
-  // Treat as already re-registered when the student is already placed in target year
-  // with explicit re-register stamp, or when a target-year record exists via promotion/repeat.
-  if ((rootAcademicYear === year || basicAcademicYear === year) && hasReRegisterStamp) return true;
-  if (recordsToYear && ["promote", "repeat"].includes(String(recordsToYear.sourceAction || "").toLowerCase())) return true;
-
-  return false;
-};
 
 const firstFilled = (...values) => {
   for (const value of values) {
@@ -90,39 +71,6 @@ const normalizeParents = (node) => {
   if (Array.isArray(node)) return node;
   if (node && typeof node === "object") return Object.values(node);
   return [];
-};
-
-const normalizeGradesPayload = (payload) => {
-  const map = {};
-
-  if (Array.isArray(payload)) {
-    payload.forEach((row) => {
-      if (!row || typeof row !== "object") return;
-      const gradeKey = String(row.grade || "").trim();
-      if (!gradeKey) return;
-      map[gradeKey] = {
-        ...row,
-        grade: gradeKey,
-        sections: row.sections || {},
-      };
-    });
-    return map;
-  }
-
-  if (payload && typeof payload === "object") {
-    Object.entries(payload).forEach(([key, row]) => {
-      if (!row || typeof row !== "object") return;
-      const gradeKey = String(row.grade || key || "").trim();
-      if (!gradeKey || gradeKey === "null" || gradeKey === "undefined") return;
-      map[gradeKey] = {
-        ...row,
-        grade: gradeKey,
-        sections: row.sections || {},
-      };
-    });
-  }
-
-  return map;
 };
 
 const toBooleanActive = (value, defaultValue = true) => {
@@ -143,65 +91,75 @@ const generateTemporaryPassword = (length = 8) => {
 export default function PromotionSystem() {
   const navigate = useNavigate();
 
-  const stored = useMemo(() => {
-    try {
-      return JSON.parse(localStorage.getItem("registrar") || localStorage.getItem("admin") || "{}") || {};
-    } catch {
-      return {};
-    }
-  }, []);
-
-  const schoolCode = stored.schoolCode || "";
-  const DB_BASE = "https://bale-house-rental-default-rtdb.firebaseio.com";
-  const DB_URL = schoolCode ? `${DB_BASE}/Platform1/Schools/${schoolCode}` : DB_BASE;
-
+  // ---------------- SESSION (registrar/finance + admin alias) ----------------
+  const { finance, admin: adminBase, schoolCode, DB_ROOT } = useRegistrarSession();
   const admin = {
-    name: stored.name || stored.username || "Register Office",
-    adminId: stored.financeId || stored.adminId || stored.userId || "",
-    profileImage: stored.profileImage || "/default-profile.png",
-    username: stored.username || "",
-    role: String(stored.role || stored.userType || "registrar").toLowerCase(),
+    ...adminBase,
+    username: finance.username || "",
+    role: String(finance.role || "registrar").toLowerCase(),
   };
+  const DB_URL = DB_ROOT || FIREBASE_DATABASE_URL;
 
-  const canConfirmPromotion = ["admin", "registrar", "school_admin"].includes(admin.role) || !admin.role;
-
-  const [dashboardMenuOpen, setDashboardMenuOpen] = useState(true);
-  const [studentMenuOpen, setStudentMenuOpen] = useState(true);
-
-  const [loading, setLoading] = useState(false);
+  const canConfirmPromotion =
+    ["admin", "registrar", "school_admin"].includes(admin.role) || !admin.role;
   const [working, setWorking] = useState(false);
   const [feedback, setFeedback] = useState({ type: "", text: "" });
 
   const [step, setStep] = useState(1);
-  const [academicYears, setAcademicYears] = useState({});
-  const [currentAcademicYear, setCurrentAcademicYear] = useState("");
   const [fromYear, setFromYear] = useState("");
   const [toYear, setToYear] = useState("");
   const [maxGrade, setMaxGrade] = useState("12");
 
-  const [gradesMap, setGradesMap] = useState({});
-  const [studentsMap, setStudentsMap] = useState({});
-  const [yearHistoryStudentsMap, setYearHistoryStudentsMap] = useState({});
-  const [yearHistoryLoading, setYearHistoryLoading] = useState(false);
 
   const [runLocked] = useState(false);
-  const [gradeFilter, setGradeFilter] = useState("all");
-  const [sectionFilter, setSectionFilter] = useState("all");
-  const [studentSearch, setStudentSearch] = useState("");
-
-  const [decisions, setDecisions] = useState({});
-  const [selectedStudentsMap, setSelectedStudentsMap] = useState({});
-  const [confirmText, setConfirmText] = useState("");
-  const [showReRegisterModal, setShowReRegisterModal] = useState(false);
-  const [reRegisterQueue, setReRegisterQueue] = useState([]);
-  const [reRegisterIndex, setReRegisterIndex] = useState(0);
-  const [reRegisterDraft, setReRegisterDraft] = useState(null);
-  const [reRegisterSaving, setReRegisterSaving] = useState(false);
-  const [reRegisterMode, setReRegisterMode] = useState("reregister");
-  const [draftOverrides, setDraftOverrides] = useState({});
   const [processedStudentIds, setProcessedStudentIds] = useState({});
 
   const notify = (type, text) => setFeedback({ type, text });
+
+  // ---------------- PROMOTION DATA (years + grades + students + history) ----------------
+  const {
+    academicYears,
+    currentAcademicYear,
+    gradesMap,
+    studentsMap,
+    yearHistoryStudentsMap,
+    yearHistoryLoading,
+    loading,
+    loadBaseData,
+    loadYearHistoryStudents,
+  } = usePromotionData({
+    schoolCode,
+    DB_URL,
+    fromYear,
+    setFromYear,
+    toYear,
+    setToYear,
+    notify,
+  });
+
+  // ---------------- RE-REGISTER DRAFT (state + lightweight mutators) ----------------
+  const {
+    showReRegisterModal,
+    setShowReRegisterModal,
+    reRegisterQueue,
+    setReRegisterQueue,
+    reRegisterIndex,
+    setReRegisterIndex,
+    reRegisterDraft,
+    setReRegisterDraft,
+    reRegisterSaving,
+    setReRegisterSaving,
+    reRegisterMode,
+    setReRegisterMode,
+    draftOverrides,
+    setDraftOverrides,
+    initReRegisterDraft,
+    moveReRegisterIndex,
+    updateDraftField,
+    updateParentDraftField,
+    addParentDraftRow,
+    removeParentDraftRow,
+  } = useReRegisterDraft({ toYear });
 
   const gradeKeys = useMemo(
     () => Object.keys(gradesMap || {}).sort((a, b) => Number(a) - Number(b)),
@@ -213,72 +171,53 @@ export default function PromotionSystem() {
     [academicYears]
   );
 
-  useEffect(() => {
-    if (!fromYear) return;
-    const computed = buildNextYearKey(fromYear);
-    if (computed && computed !== toYear) setToYear(computed);
-  }, [fromYear]);
+  // ---------------- STUDENT REVIEW (filters + derived memos for Step 2) ----------------
+  const {
+    gradeFilter,
+    setGradeFilter,
+    sectionFilter,
+    setSectionFilter,
+    studentSearch,
+    setStudentSearch,
+    studentsForFromYear,
+    sectionOptionsByGrade,
+    availableGrades,
+    availableSections,
+    visibleStudents,
+    groupedVisibleStudents,
+  } = useStudentReview({
+    fromYear,
+    toYear,
+    yearHistoryStudentsMap,
+    studentsMap,
+    processedStudentIds,
+    gradesMap,
+    gradeKeys,
+  });
 
-  const loadBaseData = async () => {
-    if (!schoolCode) {
-      notify("error", "Missing schoolCode in session. Please login again.");
-      return;
-    }
+  // ---------------- DECISIONS + SELECTION (per-student) ----------------
+  const {
+    decisions,
+    setDecisions,
+    selectedStudentsMap,
+    setSelectedStudentsMap,
+    confirmText,
+    setConfirmText,
+    updateDecision,
+    toggleStudentSelection,
+    setAllSelection,
+    resetForStudents,
+    effectiveDecision,
+    selectedStudents,
+    summary,
+  } = useDecisions({
+    studentsForFromYear,
+    visibleStudents,
+    maxGrade,
+  });
 
-    setLoading(true);
-    try {
-      const [yearsRes, dbYearsData, schoolInfo, gradesData, studentsData] = await Promise.all([
-        axios.get(`${BACKEND_BASE}/api/academic-years`, { params: { schoolCode } }).catch(() => ({ data: {} })),
-        fetchCachedJson(`${DB_URL}/AcademicYears.json`, { ttlMs: 60000 }).catch(() => ({})),
-        loadSchoolInfoNode({ rtdbBase: DB_URL }),
-        loadGradeManagementNode({ rtdbBase: DB_URL }),
-        loadSchoolStudentsNode({ rtdbBase: DB_URL }),
-      ]);
 
-      const yearsPayload = yearsRes.data || {};
-      const nextYears = yearsPayload.academicYears || dbYearsData || {};
-      const derivedCurrent = Object.entries(nextYears || {}).find(([, row]) => !!row?.isCurrent)?.[0] || "";
-      const nextCurrent = yearsPayload.currentAcademicYear || schoolInfo?.currentAcademicYear || derivedCurrent || "";
 
-      setAcademicYears(nextYears);
-      setCurrentAcademicYear(nextCurrent);
-      setFromYear((prev) => prev || nextCurrent || Object.keys(nextYears)[0] || "");
-      setGradesMap(normalizeGradesPayload(gradesData || {}));
-      setStudentsMap(studentsData || {});
-
-      notify("", "");
-    } catch (err) {
-      notify("error", err?.response?.data?.message || err?.message || "Failed to load promotion data.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadBaseData();
-  }, [schoolCode]);
-
-  const loadYearHistoryStudents = async (yearKey) => {
-    if (!yearKey || !schoolCode) {
-      setYearHistoryStudentsMap({});
-      return;
-    }
-
-    setYearHistoryLoading(true);
-    try {
-      const data = await fetchCachedJson(`${DB_URL}/YearHistory/${yearKey}/Students.json`, { ttlMs: 60000 }).catch(() => ({}));
-      setYearHistoryStudentsMap(data || {});
-    } catch (err) {
-      setYearHistoryStudentsMap({});
-      notify("error", err?.response?.data?.message || err?.message || "Failed to load YearHistory students.");
-    } finally {
-      setYearHistoryLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadYearHistoryStudents(fromYear);
-  }, [fromYear, schoolCode]);
 
   useEffect(() => {
     // Reset processed cache when year range changes.
@@ -286,103 +225,10 @@ export default function PromotionSystem() {
     setDraftOverrides({});
   }, [fromYear, toYear]);
 
-  const studentsForFromYear = useMemo(() => {
-    if (!fromYear) return [];
 
-    const list = [];
-    Object.entries(yearHistoryStudentsMap || {}).forEach(([studentId, node]) => {
-      if (processedStudentIds[studentId]) return;
 
-      const historyRow = node || {};
-      const rootRow = studentsMap[studentId] || {};
 
-      // Persistent guard: never list students already re-registered to selected To Year.
-      if (isAlreadyReRegisteredToYear(rootRow, toYear)) return;
 
-      const rootRecords = rootRow.records || {};
-      const historyRecord = (historyRow.records || {})[fromYear] || null;
-      const rootRecord = rootRecords[fromYear] || null;
-
-      const currentStatus = String(historyRecord?.status || rootRecord?.status || historyRow.status || rootRow.status || "active").toLowerCase();
-      if (["graduated", "transferred", "withdrawn"].includes(currentStatus)) return;
-
-      const grade = String(historyRecord?.grade || rootRecord?.grade || historyRow.grade || rootRow.grade || "");
-      const section = String(historyRecord?.section || rootRecord?.section || historyRow.section || rootRow.section || "").toUpperCase();
-
-      if (!grade) return;
-
-      list.push({
-        studentId,
-        userId: historyRow.userId || rootRow.userId || "",
-        name:
-          historyRow.name ||
-          rootRow.name ||
-          [historyRow.firstName || rootRow.firstName, historyRow.middleName || rootRow.middleName, historyRow.lastName || rootRow.lastName].filter(Boolean).join(" ") ||
-          historyRow.basicStudentInformation?.name ||
-          rootRow.basicStudentInformation?.name ||
-          "Student",
-        grade,
-        section,
-        status: currentStatus || "active",
-        raw: rootRow,
-        rawHistory: historyRow,
-      });
-    });
-
-    return list.sort((a, b) => {
-      const gradeDiff = Number(a.grade || 0) - Number(b.grade || 0);
-      if (gradeDiff !== 0) return gradeDiff;
-
-      const sectionDiff = String(a.section || "").localeCompare(String(b.section || ""));
-      if (sectionDiff !== 0) return sectionDiff;
-
-      return a.name.localeCompare(b.name);
-    });
-  }, [yearHistoryStudentsMap, studentsMap, fromYear, toYear, processedStudentIds]);
-
-  useEffect(() => {
-    if (gradeFilter === "all") {
-      setSectionFilter("all");
-      return;
-    }
-
-    const sectionsForGrade = new Set(
-      studentsForFromYear
-        .filter((student) => String(student.grade || "") === String(gradeFilter))
-        .map((student) => String(student.section || "").trim().toUpperCase())
-        .filter(Boolean)
-    );
-
-    if (sectionFilter !== "all" && !sectionsForGrade.has(sectionFilter)) {
-      setSectionFilter("all");
-    }
-  }, [gradeFilter, sectionFilter, studentsForFromYear]);
-
-  const getDefaultAction = (student) => {
-    if (isFinalGrade(student.grade, maxGrade)) return ACTIONS.graduate;
-    return ACTIONS.promote;
-  };
-
-  const sectionOptionsByGrade = useMemo(() => {
-    const map = {};
-    gradeKeys.forEach((grade) => {
-      const sections = (gradesMap[grade] || {}).sections || {};
-      map[grade] = Object.keys(sections).sort((a, b) => a.localeCompare(b));
-    });
-    return map;
-  }, [gradeKeys, gradesMap]);
-
-  const buildDefaultDecision = (student) => {
-    const action = getDefaultAction(student);
-    const nextGrade = action === ACTIONS.promote ? String(Number(student.grade || 0) + 1) : student.grade;
-
-    return {
-      action,
-      targetGrade: action === ACTIONS.graduate ? student.grade : nextGrade,
-      targetSection: student.section || "",
-      notes: "",
-    };
-  };
 
   const prepareReview = () => {
     if (!fromYear || !toYear) {
@@ -400,202 +246,19 @@ export default function PromotionSystem() {
       return;
     }
 
-    const next = {};
-    const selected = {};
-    studentsForFromYear.forEach((student) => {
-      next[student.studentId] = buildDefaultDecision(student);
-      selected[student.studentId] = false;
-    });
-    setDecisions(next);
-    setSelectedStudentsMap(selected);
+    resetForStudents(studentsForFromYear);
     setStep(2);
     notify("success", `Loaded ${studentsForFromYear.length} active students for review.`);
   };
 
-  const toggleStudentSelection = (studentId) => {
-    setSelectedStudentsMap((prev) => ({
-      ...prev,
-      [studentId]: !prev[studentId],
-    }));
-  };
 
-  const setAllSelection = (checked) => {
-    const next = {};
-    visibleStudents.forEach((student) => {
-      next[student.studentId] = checked;
-    });
-    setSelectedStudentsMap((prev) => ({
-      ...prev,
-      ...next,
-    }));
-  };
 
-  const selectedStudents = useMemo(
-    () => studentsForFromYear.filter((student) => !!selectedStudentsMap[student.studentId]),
-    [studentsForFromYear, selectedStudentsMap]
-  );
 
-  const availableGrades = useMemo(() => {
-    return [...new Set(studentsForFromYear.map((student) => String(student.grade || "").trim()).filter(Boolean))].sort((a, b) => Number(a) - Number(b));
-  }, [studentsForFromYear]);
 
-  const availableSections = useMemo(() => {
-    const base = gradeFilter === "all"
-      ? studentsForFromYear
-      : studentsForFromYear.filter((student) => String(student.grade || "") === String(gradeFilter));
 
-    return [...new Set(base.map((student) => String(student.section || "").trim().toUpperCase()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  }, [studentsForFromYear, gradeFilter]);
 
-  const visibleStudents = useMemo(() => {
-    const query = String(studentSearch || "").trim().toLowerCase();
 
-    return studentsForFromYear.filter((student) => {
-      if (gradeFilter !== "all" && String(student.grade || "") !== String(gradeFilter)) return false;
-      if (sectionFilter !== "all" && String(student.section || "").trim().toUpperCase() !== sectionFilter) return false;
 
-      if (!query) return true;
-
-      const haystack = [student.name, student.studentId, student.grade, student.section]
-        .map((value) => String(value || "").toLowerCase())
-        .join(" ");
-
-      return haystack.includes(query);
-    });
-  }, [studentsForFromYear, gradeFilter, sectionFilter, studentSearch]);
-
-  const groupedVisibleStudents = useMemo(() => {
-    const groups = visibleStudents.reduce((acc, student) => {
-      const grade = String(student.grade || "-");
-      const section = String(student.section || "-").trim().toUpperCase() || "-";
-
-      if (!acc[grade]) acc[grade] = {};
-      if (!acc[grade][section]) acc[grade][section] = [];
-      acc[grade][section].push(student);
-      return acc;
-    }, {});
-
-    return Object.entries(groups)
-      .sort((a, b) => Number(a[0]) - Number(b[0]))
-      .map(([grade, sections]) => ({
-        grade,
-        sections: Object.entries(sections)
-          .sort((a, b) => a[0].localeCompare(b[0]))
-          .map(([section, students]) => ({
-            section,
-            students: [...students].sort((a, b) => a.name.localeCompare(b.name)),
-          })),
-      }));
-  }, [visibleStudents]);
-
-  const buildDraftFromQueueItem = (queueItem) => {
-    if (!queueItem) return null;
-
-    const decision = queueItem.decision || {};
-    const existingDraft = queueItem.draftOverride || {};
-    const existingForm = existingDraft.form || {};
-    const source = existingDraft.sourceData || queueItem.fullStudent || queueItem.student?.raw || queueItem.student?.rawHistory || {};
-
-    const basic = source.basicStudentInformation || {};
-    const address = source.addressInformation || {};
-    const finance = source.financeInformation || {};
-    const health = source.healthEmergency || {};
-    const academic = source.academicSetup || {};
-    const account = source.systemAccountInformation || {};
-    const parentInfo = source.parentGuardianInformation || {};
-    const normalizedSourceParents = normalizeParents(parentInfo.parents).map((row) => {
-      const item = row || {};
-      const accountInfo = item.systemAccountInformation || {};
-      return {
-        parentId: firstFilled(item.parentId),
-        fullName: firstFilled(item.fullName, item.name),
-        relationship: firstFilled(item.relationship, "Guardian"),
-        phone: firstFilled(item.phone),
-        alternativePhone: firstFilled(item.alternativePhone),
-        email: firstFilled(item.email),
-        occupation: firstFilled(item.occupation),
-        nationalIdNumber: firstFilled(item.nationalIdNumber),
-        username: firstFilled(accountInfo.username),
-        temporaryPassword: firstFilled(accountInfo.temporaryPassword),
-        isActive: firstFilled(accountInfo.isActive, "true"),
-        role: firstFilled(accountInfo.role, "parent"),
-      };
-    });
-    const parents = (existingDraft.parents || []).length ? existingDraft.parents : normalizedSourceParents;
-
-    const firstName = firstFilled(existingForm.firstName, basic.firstName, source.firstName);
-    const middleName = firstFilled(existingForm.middleName, basic.middleName, source.middleName);
-    const lastName = firstFilled(existingForm.lastName, basic.lastName, source.lastName);
-    const builtName = [firstName, middleName, lastName].filter(Boolean).join(" ").trim();
-    const resolvedStatus = firstFilled(existingForm.status, source.status, basic.status, "active");
-
-    const form = {
-      firstName,
-      middleName,
-      lastName,
-      grade: firstFilled(decision.targetGrade, existingForm.grade, source.grade, basic.grade, queueItem.student?.grade),
-      section: firstFilled(decision.targetSection, existingForm.section, source.section, basic.section, queueItem.student?.section).toUpperCase(),
-      gender: firstFilled(existingForm.gender, source.gender, basic.gender),
-      dob: firstFilled(existingForm.dob, source.dob, basic.dob, source.dateOfBirth),
-      admissionDate: firstFilled(existingForm.admissionDate, source.admissionDate, basic.admissionDate),
-      studentNumber: firstFilled(existingForm.studentNumber, source.studentId, queueItem.student?.studentId),
-      academicYear: firstFilled(toYear, existingForm.academicYear, source.academicYear, basic.academicYear),
-      previousSchool: firstFilled(existingForm.previousSchool, source.previousSchool, basic.previousSchool),
-      nationalIdNumber: firstFilled(existingForm.nationalIdNumber, source.nationalIdNumber, basic.nationalIdNumber),
-      status: resolvedStatus === "graduated" ? "active" : resolvedStatus,
-      region: firstFilled(existingForm.region, address.region),
-      city: firstFilled(existingForm.city, address.city),
-      subCity: firstFilled(existingForm.subCity, address.subCity),
-      kebele: firstFilled(existingForm.kebele, address.kebele),
-      houseNumber: firstFilled(existingForm.houseNumber, address.houseNumber),
-      registrationFeePaid: firstFilled(existingForm.registrationFeePaid, finance.registrationFeePaid, "yes"),
-      hasDiscount: firstFilled(existingForm.hasDiscount, finance.hasDiscount, "no"),
-      discountAmount: firstFilled(existingForm.discountAmount, finance.discountAmount),
-      paymentPlanType: firstFilled(existingForm.paymentPlanType, finance.paymentPlanType, "monthly"),
-      transportService: firstFilled(existingForm.transportService, finance.transportService, "no"),
-      bloodType: firstFilled(existingForm.bloodType, health.bloodType),
-      medicalCondition: firstFilled(existingForm.medicalCondition, health.medicalCondition),
-      emergencyContactName: firstFilled(existingForm.emergencyContactName, health.emergencyContactName),
-      emergencyPhone: firstFilled(existingForm.emergencyPhone, health.emergencyPhone),
-      stream: firstFilled(existingForm.stream, academic.stream),
-      specialProgram: firstFilled(existingForm.specialProgram, academic.specialProgram),
-      languageOption: firstFilled(existingForm.languageOption, academic.languageOption),
-      electiveSubjects: firstFilled(existingForm.electiveSubjects, academic.electiveSubjects),
-      username: firstFilled(existingForm.username, account.username, source.username, source.studentId),
-      temporaryPassword: firstFilled(existingForm.temporaryPassword, account.temporaryPassword),
-      isActive: firstFilled(existingForm.isActive, account.isActive, source.isActive, "true"),
-      role: firstFilled(existingForm.role, account.role, "student"),
-      phone: firstFilled(existingForm.phone, source.phone),
-      email: firstFilled(existingForm.email, source.email),
-      name: firstFilled(existingForm.name, source.name, basic.name, builtName, queueItem.student?.name, "Student"),
-      userId: firstFilled(existingForm.userId, existingDraft.userId, source.userId, queueItem.student?.userId),
-    };
-
-    return {
-      studentId: firstFilled(existingDraft.studentId, queueItem.student?.studentId, source.studentId),
-      userId: firstFilled(existingDraft.userId, form.userId),
-      sourceData: source,
-      form,
-      parents: parents.length ? parents : [{
-        parentId: "",
-        fullName: "",
-        relationship: "Guardian",
-        phone: "",
-        alternativePhone: "",
-        email: "",
-        occupation: "",
-        nationalIdNumber: "",
-        username: "",
-        temporaryPassword: generateTemporaryPassword(8),
-        isActive: "true",
-        role: "parent",
-      }],
-    };
-  };
-
-  const initReRegisterDraft = (queueItem) => {
-    setReRegisterDraft(buildDraftFromQueueItem(queueItem));
-  };
 
   const loadParentSources = async () => {
     const [yearHistoryParentsMap, mainParentsMap] = await Promise.all([
@@ -683,62 +346,10 @@ export default function PromotionSystem() {
     }
   };
 
-  const updateDraftField = (field, value) => {
-    setReRegisterDraft((prev) => ({
-      ...prev,
-      form: {
-        ...(prev?.form || {}),
-        [field]: value,
-      },
-    }));
-  };
 
-  const updateParentDraftField = (index, key, value) => {
-    setReRegisterDraft((prev) => ({
-      ...prev,
-      parents: (prev?.parents || []).map((parent, idx) => (idx === index ? { ...parent, [key]: value } : parent)),
-    }));
-  };
 
-  const addParentDraftRow = () => {
-    setReRegisterDraft((prev) => ({
-      ...prev,
-      parents: [
-        ...(prev?.parents || []),
-        {
-          parentId: "",
-          fullName: "",
-          relationship: "Guardian",
-          phone: "",
-          alternativePhone: "",
-          email: "",
-          occupation: "",
-          nationalIdNumber: "",
-          username: "",
-          temporaryPassword: generateTemporaryPassword(8),
-          isActive: "true",
-          role: "parent",
-        },
-      ],
-    }));
-  };
 
-  const removeParentDraftRow = (index) => {
-    setReRegisterDraft((prev) => {
-      const current = prev?.parents || [];
-      if (current.length <= 1) return prev;
-      return {
-        ...prev,
-        parents: current.filter((_, idx) => idx !== index),
-      };
-    });
-  };
 
-  const moveReRegisterIndex = (nextIndex) => {
-    if (nextIndex < 0 || nextIndex >= reRegisterQueue.length) return;
-    setReRegisterIndex(nextIndex);
-    initReRegisterDraft(reRegisterQueue[nextIndex]);
-  };
 
   const handleSaveReRegister = async () => {
     if (!reRegisterDraft?.studentId) {
@@ -1102,64 +713,8 @@ export default function PromotionSystem() {
     }
   };
 
-  const updateDecision = (studentId, patch) => {
-    setDecisions((prev) => {
-      const current = prev[studentId] || {};
-      return {
-        ...prev,
-        [studentId]: {
-          ...current,
-          ...patch,
-        },
-      };
-    });
-  };
 
-  const effectiveDecision = (student) => {
-    const row = decisions[student.studentId] || buildDefaultDecision(student);
-    const action = row.action || getDefaultAction(student);
 
-    let targetGrade = row.targetGrade || student.grade;
-    if (action === ACTIONS.promote) targetGrade = String(Number(student.grade || 0) + 1);
-    if (action === ACTIONS.repeat) targetGrade = String(student.grade || "");
-    if (action === ACTIONS.graduate) targetGrade = String(student.grade || "");
-
-    const targetSection = String(row.targetSection || student.section || "").toUpperCase();
-
-    return {
-      ...row,
-      action,
-      targetGrade,
-      targetSection,
-    };
-  };
-
-  const summary = useMemo(() => {
-    let promoteCount = 0;
-    let repeatCount = 0;
-    let graduateCount = 0;
-    let transferCount = 0;
-    let withdrawCount = 0;
-
-    selectedStudents.forEach((student) => {
-      const action = effectiveDecision(student).action;
-      if (action === ACTIONS.promote) promoteCount += 1;
-      if (action === ACTIONS.repeat) repeatCount += 1;
-      if (action === ACTIONS.graduate) graduateCount += 1;
-      if (action === ACTIONS.transfer) transferCount += 1;
-      if (action === ACTIONS.withdraw) withdrawCount += 1;
-    });
-
-    return {
-      total: selectedStudents.length,
-      totalLoaded: studentsForFromYear.length,
-      promoteCount,
-      repeatCount,
-      graduateCount,
-      transferCount,
-      withdrawCount,
-    };
-  }, [studentsForFromYear, selectedStudents, decisions, maxGrade]);
 
   const applyPromotion = async () => {
     if (!canConfirmPromotion) {
@@ -1523,190 +1078,32 @@ export default function PromotionSystem() {
             </div>
 
             {step >= 2 ? (
-              <div className="ps-panel" style={{ ...cardStyle, overflow: "hidden" }}>
-                <div style={{ padding: "12px 14px", fontWeight: 900, color: "var(--text-primary)", borderBottom: "1px solid var(--border-soft)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span>Step 2 - Review Student Decisions ({visibleStudents.length} visible of {studentsForFromYear.length})</span>
-                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{yearLabel(fromYear)} {"->"} {yearLabel(toYear)}</span>
-                </div>
-
-                <div style={{ ...cardStyle, margin: 12, padding: 10, border: "1px solid var(--border-soft)", background: "var(--surface-muted)" }}>
-                  <div style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", gap: 12, flexWrap: "wrap" }}>
-                    <span>Selected: {summary.total} / {summary.totalLoaded}</span>
-                    <span>Visible: {visibleStudents.length}</span>
-                    <span>Promote: {summary.promoteCount}</span>
-                    <span>Repeat: {summary.repeatCount}</span>
-                    <span>Graduate: {summary.graduateCount}</span>
-                    <span>Transfer: {summary.transferCount}</span>
-                    <span>Withdraw: {summary.withdrawCount}</span>
-                  </div>
-                  <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <button onClick={() => setAllSelection(true)} className="ps-btn ps-btn-soft" style={{ padding: "6px 10px", fontSize: 11 }}>Select All</button>
-                    <button onClick={() => setAllSelection(false)} className="ps-btn" style={{ border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", padding: "6px 10px", fontSize: 11 }}>Clear Selection</button>
-                  </div>
-                </div>
-
-                <div style={{ ...cardStyle, margin: "0 12px 12px", padding: 10, border: "1px solid var(--border-soft)", background: "var(--surface-panel)" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
-                    <select value={gradeFilter} onChange={(e) => setGradeFilter(e.target.value)} className="ps-select">
-                      <option value="all">All Grades</option>
-                      {availableGrades.map((grade) => (
-                        <option key={grade} value={grade}>{`Grade ${grade}`}</option>
-                      ))}
-                    </select>
-
-                    <select value={sectionFilter} onChange={(e) => setSectionFilter(e.target.value)} className="ps-select">
-                      <option value="all">All Sections</option>
-                      {availableSections.map((section) => (
-                        <option key={section} value={section}>{`Section ${section}`}</option>
-                      ))}
-                    </select>
-
-                    <input
-                      value={studentSearch}
-                      onChange={(e) => setStudentSearch(e.target.value)}
-                      placeholder="Search by student name or ID"
-                      className="ps-input"
-                    />
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setGradeFilter("all");
-                        setSectionFilter("all");
-                        setStudentSearch("");
-                      }}
-                      className="ps-btn"
-                      style={{ border: "1px solid var(--border-soft)", background: "var(--surface-muted)", color: "var(--text-secondary)", justifyContent: "center" }}
-                    >
-                      Reset Filters
-                    </button>
-                  </div>
-
-                  <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
-                    Students are now grouped by grade and section so the registerer can review one class level at a time.
-                  </div>
-                </div>
-
-                <div style={{ ...cardStyle, margin: "0 12px 12px", overflow: "hidden" }}>
-                  <div className="ps-table-head" style={{ ...cardStyle, borderRadius: 0, border: "none", borderBottom: "1px solid var(--border-soft)", boxShadow: "none", padding: "10px 12px", background: "var(--surface-muted)" }}>
-                    <div className="ps-table" style={{ fontSize: 12, fontWeight: 900, color: "var(--text-secondary)" }}>
-                      <div>Select</div>
-                      <div>Student</div>
-                      <div>Grade</div>
-                      <div>Section</div>
-                      <div>Action</div>
-                      <div>To Grade</div>
-                      <div>To Section</div>
-                      <div>Edit Info</div>
-                    </div>
-                  </div>
-
-                  <div style={{ maxHeight: 460, overflow: "auto" }}>
-                    {groupedVisibleStudents.length === 0 ? (
-                      <div style={{ padding: "18px 14px", fontSize: 13, color: "var(--text-muted)" }}>
-                        No students match the current grade filter, section filter, or search.
-                      </div>
-                    ) : groupedVisibleStudents.map((gradeGroup) => (
-                      <div key={gradeGroup.grade}>
-                        <div style={{ padding: "10px 12px", borderTop: "1px solid var(--border-soft)", borderBottom: "1px solid var(--border-soft)", background: "color-mix(in srgb, var(--accent) 8%, var(--surface-muted))", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                          <div style={{ fontSize: 13, fontWeight: 900, color: "var(--text-primary)" }}>{`Grade ${gradeGroup.grade}`}</div>
-                          <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>
-                            {gradeGroup.sections.reduce((count, sectionGroup) => count + sectionGroup.students.length, 0)} students
-                          </div>
-                        </div>
-
-                        {gradeGroup.sections.map((sectionGroup) => (
-                          <div key={`${gradeGroup.grade}-${sectionGroup.section}`}>
-                            <div style={{ padding: "8px 12px", background: "var(--surface-panel)", borderBottom: "1px solid var(--border-soft)", fontSize: 12, fontWeight: 800, color: "var(--text-secondary)" }}>
-                              {`Section ${sectionGroup.section}`}
-                            </div>
-
-                            {sectionGroup.students.map((student) => {
-                              const decision = effectiveDecision(student);
-                              const sectionOpts = sectionOptionsByGrade[decision.targetGrade] || [];
-                              const canEditInfo = decision.action === ACTIONS.promote || decision.action === ACTIONS.repeat;
-                              const hasDraftOverride = !!draftOverrides[student.studentId];
-
-                              return (
-                                <div key={student.studentId} className="ps-row" style={{ borderTop: "1px solid var(--border-soft)", padding: "10px 12px" }}>
-                                  <div className="ps-table">
-                                    <div>
-                                      <input
-                                        type="checkbox"
-                                        checked={!!selectedStudentsMap[student.studentId]}
-                                        onChange={() => toggleStudentSelection(student.studentId)}
-                                      />
-                                    </div>
-                                    <div style={{ minWidth: 0 }}>
-                                      <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{student.name}</div>
-                                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{student.studentId}</div>
-                                    </div>
-
-                                    <div style={{ fontSize: 12, fontWeight: 700 }}>{student.grade}</div>
-                                    <div style={{ fontSize: 12, fontWeight: 700 }}>{student.section || "-"}</div>
-
-                                    <select value={decision.action} onChange={(e) => updateDecision(student.studentId, { action: e.target.value })} className="ps-select" style={{ padding: "6px 8px", fontSize: 12 }}>
-                                      <option value={ACTIONS.promote}>Promote</option>
-                                      <option value={ACTIONS.repeat}>Repeat</option>
-                                      <option value={ACTIONS.graduate}>Graduate</option>
-                                      <option value={ACTIONS.transfer}>Transfer</option>
-                                      <option value={ACTIONS.withdraw}>Withdraw</option>
-                                    </select>
-
-                                    <div style={{ fontSize: 12, fontWeight: 700 }}>
-                                      {decision.action === ACTIONS.graduate || decision.action === ACTIONS.transfer || decision.action === ACTIONS.withdraw
-                                        ? "-"
-                                        : decision.targetGrade}
-                                    </div>
-
-                                    {decision.action === ACTIONS.promote || decision.action === ACTIONS.repeat ? (
-                                      <select
-                                        value={decision.targetSection}
-                                        onChange={(e) => updateDecision(student.studentId, { targetSection: e.target.value })}
-                                        className="ps-select"
-                                        style={{ padding: "6px 8px", fontSize: 12 }}
-                                      >
-                                        <option value="">Select</option>
-                                        {(sectionOpts.length ? sectionOpts : [student.section || "A"]).map((s) => (
-                                          <option key={s} value={String(s).toUpperCase()}>{String(s).toUpperCase()}</option>
-                                        ))}
-                                      </select>
-                                    ) : (
-                                      <div style={{ fontSize: 12, color: "var(--text-muted)" }}>-</div>
-                                    )}
-
-                                    <div>
-                                      <button
-                                        type="button"
-                                        onClick={() => openStudentDraftEditor(student)}
-                                        disabled={!canEditInfo || working || reRegisterSaving}
-                                        className="ps-btn"
-                                        title={canEditInfo ? "Edit student information before re-registration" : "Editing is only available for promote or repeat actions"}
-                                        style={{
-                                          width: "100%",
-                                          justifyContent: "center",
-                                          border: `1px solid ${canEditInfo ? "color-mix(in srgb, var(--accent) 28%, transparent)" : "var(--border-soft)"}`,
-                                          background: canEditInfo ? "var(--accent-soft)" : "var(--surface-panel)",
-                                          color: canEditInfo ? "var(--accent-strong)" : "var(--text-muted)",
-                                          padding: "6px 8px",
-                                          fontSize: 11,
-                                          fontWeight: 800,
-                                        }}
-                                      >
-                                        <FaFileAlt /> {hasDraftOverride ? "Edit Draft" : "Edit"}
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ))}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
+              <Step2StudentReview
+                visibleStudents={visibleStudents}
+                studentsForFromYear={studentsForFromYear}
+                fromYear={fromYear}
+                toYear={toYear}
+                summary={summary}
+                selectedStudentsMap={selectedStudentsMap}
+                toggleStudentSelection={toggleStudentSelection}
+                setAllSelection={setAllSelection}
+                gradeFilter={gradeFilter}
+                setGradeFilter={setGradeFilter}
+                availableGrades={availableGrades}
+                sectionFilter={sectionFilter}
+                setSectionFilter={setSectionFilter}
+                availableSections={availableSections}
+                studentSearch={studentSearch}
+                setStudentSearch={setStudentSearch}
+                groupedVisibleStudents={groupedVisibleStudents}
+                effectiveDecision={effectiveDecision}
+                sectionOptionsByGrade={sectionOptionsByGrade}
+                updateDecision={updateDecision}
+                draftOverrides={draftOverrides}
+                openStudentDraftEditor={openStudentDraftEditor}
+                working={working}
+                reRegisterSaving={reRegisterSaving}
+              />
             ) : null}
 
             {step >= 2 ? (
@@ -1738,203 +1135,21 @@ export default function PromotionSystem() {
         </div>
       </div>
 
-      {showReRegisterModal && reRegisterDraft ? (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", zIndex: 10000, padding: 16 }}>
-          <div style={{ width: "100%", height: "100%", background: "var(--surface-panel)", borderRadius: 16, border: "1px solid var(--border-soft)", boxShadow: "0 24px 44px rgba(15,23,42,0.28)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-            <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", background: "linear-gradient(180deg, var(--surface-muted) 0%, var(--surface-panel) 100%)" }}>
-              <div>
-                <div style={{ fontSize: 18, fontWeight: 900, color: "var(--text-primary)" }}>{reRegisterMode === "edit" ? "Edit Student Promotion Draft" : "Re-Register Student Data"}</div>
-                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                  {reRegisterMode === "edit"
-                    ? `This draft will be applied when promotion is confirmed | ID: ${reRegisterDraft.studentId}`
-                    : `Student ${reRegisterIndex + 1} of ${reRegisterQueue.length} | ID: ${reRegisterDraft.studentId}`}
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {reRegisterMode !== "edit" ? (
-                  <>
-                    <button onClick={() => moveReRegisterIndex(reRegisterIndex - 1)} className="ps-btn" disabled={reRegisterIndex === 0 || reRegisterSaving} style={{ border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", padding: "7px 10px", fontWeight: 700 }}>Previous</button>
-                    <button onClick={() => moveReRegisterIndex(reRegisterIndex + 1)} className="ps-btn" disabled={reRegisterIndex >= reRegisterQueue.length - 1 || reRegisterSaving} style={{ border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", padding: "7px 10px", fontWeight: 700 }}>Next</button>
-                  </>
-                ) : null}
-                <button onClick={() => setShowReRegisterModal(false)} className="ps-btn" disabled={reRegisterSaving} style={{ border: "1px solid var(--danger-border)", background: "var(--surface-panel)", color: "var(--danger)", padding: "7px 10px", fontWeight: 700 }}>Close</button>
-              </div>
-            </div>
-
-            <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
-              <div className="ps-rereg-body">
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <div className="ps-rereg-section">
-                    <p className="ps-rereg-section-title">Basic Student Information</p>
-                    <div className="ps-rereg-grid-3">
-                      <div className="ps-rereg-field"><label>First Name</label><input value={reRegisterDraft.form?.firstName || ""} onChange={(e) => updateDraftField("firstName", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Middle Name</label><input value={reRegisterDraft.form?.middleName || ""} onChange={(e) => updateDraftField("middleName", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Last Name</label><input value={reRegisterDraft.form?.lastName || ""} onChange={(e) => updateDraftField("lastName", e.target.value)} /></div>
-                    </div>
-                    <div className="ps-rereg-grid-3" style={{ marginTop: 8 }}>
-                      <div className="ps-rereg-field"><label>Grade</label><input value={reRegisterDraft.form?.grade || ""} onChange={(e) => updateDraftField("grade", e.target.value.replace(/[^0-9]/g, ""))} /></div>
-                      <div className="ps-rereg-field"><label>Section</label><input value={reRegisterDraft.form?.section || ""} onChange={(e) => updateDraftField("section", e.target.value.toUpperCase())} /></div>
-                      <div className="ps-rereg-field"><label>Academic Year</label><input value={reRegisterDraft.form?.academicYear || ""} onChange={(e) => updateDraftField("academicYear", e.target.value)} /></div>
-                    </div>
-                    <div className="ps-rereg-grid-3" style={{ marginTop: 8 }}>
-                      <div className="ps-rereg-field"><label>Gender</label><input value={reRegisterDraft.form?.gender || ""} onChange={(e) => updateDraftField("gender", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Date of Birth</label><input value={reRegisterDraft.form?.dob || ""} onChange={(e) => updateDraftField("dob", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Admission Date</label><input value={reRegisterDraft.form?.admissionDate || ""} onChange={(e) => updateDraftField("admissionDate", e.target.value)} /></div>
-                    </div>
-                    <div className="ps-rereg-grid-3" style={{ marginTop: 8 }}>
-                      <div className="ps-rereg-field"><label>Student Number</label><input value={reRegisterDraft.form?.studentNumber || ""} onChange={(e) => updateDraftField("studentNumber", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>National ID Number</label><input value={reRegisterDraft.form?.nationalIdNumber || ""} onChange={(e) => updateDraftField("nationalIdNumber", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Status</label><input value={reRegisterDraft.form?.status || "active"} onChange={(e) => updateDraftField("status", e.target.value)} /></div>
-                    </div>
-                    <div className="ps-rereg-grid-2" style={{ marginTop: 8 }}>
-                      <div className="ps-rereg-field"><label>Phone</label><input value={reRegisterDraft.form?.phone || ""} onChange={(e) => updateDraftField("phone", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Email</label><input value={reRegisterDraft.form?.email || ""} onChange={(e) => updateDraftField("email", e.target.value)} /></div>
-                    </div>
-                    <div className="ps-rereg-field" style={{ marginTop: 8 }}><label>Previous School</label><input value={reRegisterDraft.form?.previousSchool || ""} onChange={(e) => updateDraftField("previousSchool", e.target.value)} /></div>
-                  </div>
-
-                  <div className="ps-rereg-section">
-                    <p className="ps-rereg-section-title">Address Information</p>
-                    <div className="ps-rereg-grid-3">
-                      <div className="ps-rereg-field"><label>Region</label><input value={reRegisterDraft.form?.region || ""} onChange={(e) => updateDraftField("region", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>City</label><input value={reRegisterDraft.form?.city || ""} onChange={(e) => updateDraftField("city", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Sub City</label><input value={reRegisterDraft.form?.subCity || ""} onChange={(e) => updateDraftField("subCity", e.target.value)} /></div>
-                    </div>
-                    <div className="ps-rereg-grid-2" style={{ marginTop: 8 }}>
-                      <div className="ps-rereg-field"><label>Kebele</label><input value={reRegisterDraft.form?.kebele || ""} onChange={(e) => updateDraftField("kebele", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>House Number</label><input value={reRegisterDraft.form?.houseNumber || ""} onChange={(e) => updateDraftField("houseNumber", e.target.value)} /></div>
-                    </div>
-                  </div>
-
-                  <div className="ps-rereg-section">
-                    <p className="ps-rereg-section-title">Finance Information</p>
-                    <div className="ps-rereg-grid-3">
-                      <div className="ps-rereg-field"><label>Registration Fee Paid</label><input value={reRegisterDraft.form?.registrationFeePaid || ""} onChange={(e) => updateDraftField("registrationFeePaid", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Has Discount</label><input value={reRegisterDraft.form?.hasDiscount || ""} onChange={(e) => updateDraftField("hasDiscount", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Discount Amount</label><input value={reRegisterDraft.form?.discountAmount || ""} onChange={(e) => updateDraftField("discountAmount", e.target.value)} /></div>
-                    </div>
-                    <div className="ps-rereg-grid-2" style={{ marginTop: 8 }}>
-                      <div className="ps-rereg-field"><label>Payment Plan Type</label><input value={reRegisterDraft.form?.paymentPlanType || ""} onChange={(e) => updateDraftField("paymentPlanType", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Transport Service</label><input value={reRegisterDraft.form?.transportService || ""} onChange={(e) => updateDraftField("transportService", e.target.value)} /></div>
-                    </div>
-                  </div>
-
-                  <div className="ps-rereg-section">
-                    <p className="ps-rereg-section-title">Health And Academic Setup</p>
-                    <div className="ps-rereg-grid-2">
-                      <div className="ps-rereg-field"><label>Blood Type</label><input value={reRegisterDraft.form?.bloodType || ""} onChange={(e) => updateDraftField("bloodType", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Medical Condition</label><input value={reRegisterDraft.form?.medicalCondition || ""} onChange={(e) => updateDraftField("medicalCondition", e.target.value)} /></div>
-                    </div>
-                    <div className="ps-rereg-grid-2" style={{ marginTop: 8 }}>
-                      <div className="ps-rereg-field"><label>Emergency Contact Name</label><input value={reRegisterDraft.form?.emergencyContactName || ""} onChange={(e) => updateDraftField("emergencyContactName", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Emergency Phone</label><input value={reRegisterDraft.form?.emergencyPhone || ""} onChange={(e) => updateDraftField("emergencyPhone", e.target.value)} /></div>
-                    </div>
-                    <div className="ps-rereg-grid-3" style={{ marginTop: 8 }}>
-                      <div className="ps-rereg-field"><label>Stream</label><input value={reRegisterDraft.form?.stream || ""} onChange={(e) => updateDraftField("stream", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Special Program</label><input value={reRegisterDraft.form?.specialProgram || ""} onChange={(e) => updateDraftField("specialProgram", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Language Option</label><input value={reRegisterDraft.form?.languageOption || ""} onChange={(e) => updateDraftField("languageOption", e.target.value)} /></div>
-                    </div>
-                    <div className="ps-rereg-field" style={{ marginTop: 8 }}>
-                      <label>Elective Subjects</label>
-                      <textarea rows={2} value={reRegisterDraft.form?.electiveSubjects || ""} onChange={(e) => updateDraftField("electiveSubjects", e.target.value)} />
-                    </div>
-                  </div>
-
-                  <div className="ps-rereg-section">
-                    <p className="ps-rereg-section-title">System Account Information</p>
-                    <div className="ps-rereg-grid-2">
-                      <div className="ps-rereg-field"><label>Username</label><input value={reRegisterDraft.form?.username || ""} onChange={(e) => updateDraftField("username", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Temporary Password</label><input value={reRegisterDraft.form?.temporaryPassword || ""} onChange={(e) => updateDraftField("temporaryPassword", e.target.value)} /></div>
-                    </div>
-                    <div className="ps-rereg-grid-2" style={{ marginTop: 8 }}>
-                      <div className="ps-rereg-field"><label>Is Active</label><input value={reRegisterDraft.form?.isActive || "true"} onChange={(e) => updateDraftField("isActive", e.target.value)} /></div>
-                      <div className="ps-rereg-field"><label>Role</label><input value={reRegisterDraft.form?.role || "student"} onChange={(e) => updateDraftField("role", e.target.value)} /></div>
-                    </div>
-                  </div>
-
-                  <div className="ps-rereg-section">
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                      <p className="ps-rereg-section-title" style={{ margin: 0 }}>Parent Guardian Information</p>
-                      <button onClick={addParentDraftRow} type="button" style={{ border: "1px solid color-mix(in srgb, var(--accent) 28%, transparent)", background: "var(--accent-soft)", color: "var(--accent-strong)", borderRadius: 8, padding: "5px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>+ Add Parent</button>
-                    </div>
-                    {(reRegisterDraft.parents || []).map((parent, index) => (
-                      <div key={`${parent.parentId || "parent"}_${index}`} style={{ border: "1px solid var(--border-soft)", borderRadius: 10, padding: 8, marginBottom: 8, background: "var(--surface-panel)" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                          <strong style={{ fontSize: 12, color: "var(--text-primary)" }}>Parent #{index + 1}</strong>
-                          <button type="button" onClick={() => removeParentDraftRow(index)} style={{ border: "1px solid var(--danger-border)", background: "var(--surface-panel)", color: "var(--danger)", borderRadius: 8, padding: "4px 7px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Remove</button>
-                        </div>
-                        <div className="ps-rereg-grid-3">
-                          <div className="ps-rereg-field"><label>Parent ID</label><input value={parent.parentId || ""} onChange={(e) => updateParentDraftField(index, "parentId", e.target.value)} /></div>
-                          <div className="ps-rereg-field"><label>Full Name</label><input value={parent.fullName || ""} onChange={(e) => updateParentDraftField(index, "fullName", e.target.value)} /></div>
-                          <div className="ps-rereg-field">
-                            <label>Relationship</label>
-                            <select value={parent.relationship || "Guardian"} onChange={(e) => updateParentDraftField(index, "relationship", e.target.value)}>
-                              <option value="Father">Father</option>
-                              <option value="Mother">Mother</option>
-                              <option value="Guardian">Guardian</option>
-                            </select>
-                          </div>
-                        </div>
-                        <div className="ps-rereg-grid-3" style={{ marginTop: 8 }}>
-                          <div className="ps-rereg-field"><label>Phone</label><input value={parent.phone || ""} onChange={(e) => updateParentDraftField(index, "phone", e.target.value)} /></div>
-                          <div className="ps-rereg-field"><label>Alternative Phone</label><input value={parent.alternativePhone || ""} onChange={(e) => updateParentDraftField(index, "alternativePhone", e.target.value)} /></div>
-                          <div className="ps-rereg-field"><label>Email</label><input value={parent.email || ""} onChange={(e) => updateParentDraftField(index, "email", e.target.value)} /></div>
-                        </div>
-                        <div className="ps-rereg-grid-3" style={{ marginTop: 8 }}>
-                          <div className="ps-rereg-field"><label>Occupation</label><input value={parent.occupation || ""} onChange={(e) => updateParentDraftField(index, "occupation", e.target.value)} /></div>
-                          <div className="ps-rereg-field"><label>National ID Number</label><input value={parent.nationalIdNumber || ""} onChange={(e) => updateParentDraftField(index, "nationalIdNumber", e.target.value)} /></div>
-                          <div className="ps-rereg-field"><label>Username</label><input value={parent.username || ""} onChange={(e) => updateParentDraftField(index, "username", e.target.value)} /></div>
-                        </div>
-                        <div className="ps-rereg-grid-3" style={{ marginTop: 8 }}>
-                          <div className="ps-rereg-field"><label>Temporary Password</label><input value={parent.temporaryPassword || ""} onChange={(e) => updateParentDraftField(index, "temporaryPassword", e.target.value)} /></div>
-                          <div className="ps-rereg-field">
-                            <label>isActive</label>
-                            <select value={parent.isActive || "true"} onChange={(e) => updateParentDraftField(index, "isActive", e.target.value)}>
-                              <option value="true">true</option>
-                              <option value="false">false</option>
-                            </select>
-                          </div>
-                          <div className="ps-rereg-field"><label>Role</label><input value={parent.role || "parent"} readOnly /></div>
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
-                          <button
-                            type="button"
-                            onClick={() => updateParentDraftField(index, "temporaryPassword", generateTemporaryPassword(8))}
-                            style={{ border: "1px solid color-mix(in srgb, var(--accent) 28%, transparent)", color: "var(--accent-strong)", background: "var(--surface-panel)", borderRadius: 8, padding: "4px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
-                          >
-                            Generate Password
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              </div>
-            </div>
-            </div>
-
-            <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border-soft)", display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", background: "linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)" }}>
-              {reRegisterMode === "edit" ? (
-                <div style={{ width: "100%", display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>Save the draft here, then confirm promotion when you are ready.</div>
-                  <button onClick={handleSaveReRegister} className="ps-btn ps-btn-primary" disabled={reRegisterSaving}>
-                    {reRegisterSaving ? "Saving..." : "Save Draft"}
-                  </button>
-                </div>
-              ) : (
-                <>
-                  <button onClick={() => moveReRegisterIndex(reRegisterIndex + 1)} className="ps-btn" disabled={reRegisterIndex >= reRegisterQueue.length - 1 || reRegisterSaving} style={{ border: "1px solid var(--border-soft)", background: "var(--surface-panel)", color: "var(--text-secondary)", fontWeight: 700 }}>
-                    Skip (Next)
-                  </button>
-
-                  <button onClick={handleSaveReRegister} className="ps-btn ps-btn-primary" disabled={reRegisterSaving}>
-                    {reRegisterSaving ? "Saving..." : reRegisterIndex >= reRegisterQueue.length - 1 ? "Re-Register & Finish" : "Re-Register & Next"}
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ReRegisterModal
+        open={showReRegisterModal}
+        draft={reRegisterDraft}
+        mode={reRegisterMode}
+        index={reRegisterIndex}
+        queueLength={reRegisterQueue.length}
+        saving={reRegisterSaving}
+        onClose={() => setShowReRegisterModal(false)}
+        onMoveIndex={moveReRegisterIndex}
+        onUpdateField={updateDraftField}
+        onUpdateParentField={updateParentDraftField}
+        onAddParentRow={addParentDraftRow}
+        onRemoveParentRow={removeParentDraftRow}
+        onSave={handleSaveReRegister}
+      />
     </div>
   );
 }

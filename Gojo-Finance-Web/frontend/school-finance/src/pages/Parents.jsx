@@ -16,7 +16,7 @@ import {
   FaChartLine,
 } from "react-icons/fa";
 import axios from "axios";
-import { FixedSizeList } from "react-window";
+// import { FixedSizeList } from "react-window";
 import { getDatabase, ref as rdbRef, onValue } from "firebase/database";
 import { BACKEND_BASE } from "../config.js";
 import useTopbarNotifications from "../hooks/useTopbarNotifications";

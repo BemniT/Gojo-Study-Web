@@ -1,244 +1,66 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { FaBell, FaCog, FaFacebookMessenger, FaHistory, FaUndoAlt, FaUserSlash, FaUsers } from 'react-icons/fa';
-import api from '../api';
 import './Dashboard.css';
 import '../styles/global.css';
-import { getEmployeesSnapshot, setEmployeesSnapshot } from '../hrData';
+import AvatarBadge from '../components/AvatarBadge';
+import useHrSession from '../hooks/auth/useHrSession';
+import useTerminatedEmployees from '../hooks/employees/useTerminatedEmployees';
 
-function isEmployeeTerminatedRecord(value) {
-  const raw = value || {};
-  const employment = raw.employment || raw.profileData?.employment || {};
-  const job = { ...(raw.job || raw.profileData?.job || {}), ...employment };
-  const statusText = String(job.status || raw.status || '').trim().toLowerCase();
-  return Boolean(raw.terminated) || Boolean(raw.termination?.terminatedAt) || statusText.includes('terminated');
-}
+const headerActionStyle = {
+  position: 'relative',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 8,
+  height: 38,
+  minWidth: 38,
+  padding: '0 14px',
+  borderRadius: 999,
+  border: '1px solid var(--border-soft, #dbe2f2)',
+  background: 'var(--surface-panel, #fff)',
+  color: 'var(--text-secondary, #334155)',
+  fontSize: 13,
+  fontWeight: 700,
+  cursor: 'pointer',
+  textDecoration: 'none',
+};
 
-function normalizeTerminations(data) {
-  const list = Array.isArray(data)
-    ? data
-    : Object.entries(data || {}).map(([id, payload]) => ({
-        ...(payload || {}),
-        id,
-      }));
+const thStyle = {
+  padding: '14px 18px',
+  textAlign: 'left',
+  fontSize: 11,
+  fontWeight: 800,
+  color: 'var(--text-muted)',
+  textTransform: 'uppercase',
+  letterSpacing: '0.08em',
+  borderBottom: '1px solid var(--border-soft)',
+};
 
-  return list
-    .map((record) => {
-      return {
-        ...record,
-        _name: record?.employeeName || 'Employee',
-        _department: record?.department || 'Unassigned',
-        _position: record?.position || 'Staff',
-        _profileImage: record?.profileImage || '',
-        _terminationReason: record?.reason || 'Not recorded',
-        _terminationNote: record?.note || '',
-        _terminatedAt: record?.createdAt || record?.date || '—',
-        _terminatedBy: record?.terminatedByName || record?.terminatedBy || '—',
-        _lastWorkingDate: record?.date || '—',
-      };
-    })
-    .sort((leftItem, rightItem) => {
-      const leftDate = Date.parse(leftItem._terminatedAt);
-      const rightDate = Date.parse(rightItem._terminatedAt);
-      if (!Number.isNaN(leftDate) && !Number.isNaN(rightDate) && leftDate !== rightDate) {
-        return rightDate - leftDate;
-      }
-      return leftItem._name.localeCompare(rightItem._name);
-    });
-}
+const tdStyle = {
+  padding: '16px 18px',
+  fontSize: 13,
+  color: 'var(--text-secondary)',
+  borderBottom: '1px solid var(--border-soft)',
+};
 
-function getInitials(name) {
-  return (name || 'Employee')
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part.charAt(0).toUpperCase())
-    .join('') || 'E';
-}
-
-function formatDate(value) {
+const formatDate = (value) => {
   if (!value || value === '—') return '—';
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-function AvatarBadge({ src, name, size = 48 }) {
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    setFailed(false);
-  }, [src]);
-
-  if (!src || failed) {
-    return (
-      <div
-        style={{
-          width: size,
-          height: size,
-          borderRadius: 16,
-          border: '1px solid var(--border-soft)',
-          background: 'linear-gradient(135deg, var(--surface-accent) 0%, var(--surface-muted) 100%)',
-          color: 'var(--accent-strong)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontSize: 15,
-          fontWeight: 800,
-          flexShrink: 0,
-        }}
-      >
-        {getInitials(name)}
-      </div>
-    );
-  }
-
-  return (
-    <img
-      src={src}
-      alt={name || 'Employee'}
-      onError={() => setFailed(true)}
-      style={{ width: size, height: size, borderRadius: 16, objectFit: 'cover', border: '1px solid var(--border-soft)', flexShrink: 0 }}
-    />
-  );
-}
+};
 
 export default function TerminatedEmployees() {
   const navigate = useNavigate();
-  const [admin] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('admin') || '{}');
-    } catch {
-      return {};
-    }
-  });
-  const [terminatedEmployees, setTerminatedEmployees] = useState([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState('');
-
-  async function loadTerminationArchive({ showError = true } = {}) {
-    setIsLoading(true);
-    if (showError) {
-      setErrorMessage('');
-    }
-
-    try {
-      const response = await api.get('/employee-terminations');
-      setTerminatedEmployees(normalizeTerminations(response.data || []));
-    } catch (error) {
-      console.error(error);
-      setTerminatedEmployees([]);
-      if (showError) {
-        setErrorMessage('Failed to load terminated employees.');
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  const headerActionStyle = {
-    position: 'relative',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    height: 38,
-    minWidth: 38,
-    padding: '0 14px',
-    borderRadius: 999,
-    border: '1px solid var(--border-soft, #dbe2f2)',
-    background: 'var(--surface-panel, #fff)',
-    color: 'var(--text-secondary, #334155)',
-    fontSize: 13,
-    fontWeight: 700,
-    cursor: 'pointer',
-    textDecoration: 'none',
-  };
-
-  function getAdminIdPayload() {
-    const payload = {};
-    if (admin.hrId) payload.hrId = admin.hrId;
-    if (admin.hrID) payload.hrID = admin.hrID;
-    if (admin.adminId) payload.adminId = admin.adminId;
-    if (admin.adminID) payload.adminID = admin.adminID;
-    if (admin.userId) payload.userId = admin.userId;
-    if (admin.id) payload.userId = admin.id;
-    return payload;
-  }
-
-  useEffect(() => {
-    loadTerminationArchive();
-  }, []);
-
-  const summary = useMemo(() => {
-    const total = terminatedEmployees.length;
-    const departments = new Set(terminatedEmployees.map((employee) => employee._department).filter(Boolean)).size;
-    const recent = terminatedEmployees.filter((employee) => {
-      const parsed = employee._terminatedAt && employee._terminatedAt !== '—' ? new Date(employee._terminatedAt) : null;
-      return parsed && !Number.isNaN(parsed.getTime()) && (Date.now() - parsed.getTime()) / 86400000 <= 30;
-    }).length;
-
-    return { total, departments, recent };
-  }, [terminatedEmployees]);
-
-  async function recoverCompletedReactivation(employeeId) {
-    try {
-      const snapshot = await getEmployeesSnapshot(0);
-      const snapshotList = Array.isArray(snapshot)
-        ? snapshot
-        : Object.entries(snapshot || {}).map(([id, payload]) => ({ ...(payload || {}), id }));
-      const matchedEmployee = snapshotList.find((employee) => String(employee?.id || employee?.employeeId) === String(employeeId));
-
-      if (matchedEmployee && !isEmployeeTerminatedRecord(matchedEmployee)) {
-        setEmployeesSnapshot(snapshot);
-        setTerminatedEmployees((current) => current.filter((employee) => String(employee.employeeId) !== String(employeeId)));
-        return true;
-      }
-    } catch (error) {
-      console.error('Failed to refresh employees after reactivation.', error);
-    }
-
-    try {
-      const response = await api.get(`/employees/${employeeId}`);
-      if (!isEmployeeTerminatedRecord(response.data)) {
-        setTerminatedEmployees((current) => current.filter((employee) => String(employee.employeeId) !== String(employeeId)));
-        return true;
-      }
-    } catch (error) {
-      console.error('Failed to verify raw employee reactivation state.', error);
-    }
-
-    return false;
-  }
-
-  async function reactivate(employeeId) {
-    try {
-      setIsLoading(true);
-      setErrorMessage('');
-      await api.post(`/employees/${employeeId}/reactivate`, getAdminIdPayload());
-
-      setTerminatedEmployees((current) => current.filter((employee) => String(employee.employeeId) !== String(employeeId)));
-
-      try {
-        const snapshot = await getEmployeesSnapshot(0);
-        setEmployeesSnapshot(snapshot);
-      } catch (error) {
-        console.error('Failed to refresh employee summaries after reactivation.', error);
-      }
-
-      await loadTerminationArchive({ showError: false });
-    } catch (error) {
-      console.error(error);
-      const recovered = await recoverCompletedReactivation(employeeId);
-      if (recovered) {
-        setErrorMessage('');
-        return;
-      }
-      setErrorMessage('Failed to reactivate employee.');
-    } finally {
-      setIsLoading(false);
-    }
-  }
+  const { admin, getAdminIdPayload } = useHrSession();
+  const {
+    terminatedEmployees,
+    isLoading,
+    errorMessage,
+    summary,
+    reactivate,
+  } = useTerminatedEmployees({ getAdminIdPayload });
 
   return (
     <div
@@ -254,16 +76,10 @@ export default function TerminatedEmployees() {
       <nav
         className="top-navbar"
         style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
+          position: 'fixed', top: 0, left: 0, right: 0,
           height: 'var(--topbar-height)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 16,
-          padding: '0 18px 0 20px',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 16, padding: '0 18px 0 20px',
           borderBottom: '1px solid var(--border-soft)',
           background: 'var(--surface-panel)',
           zIndex: 60,
@@ -277,21 +93,16 @@ export default function TerminatedEmployees() {
           <button type="button" title="Notifications" style={headerActionStyle}><FaBell /></button>
           <button type="button" title="Messages" onClick={() => navigate('/all-chat')} style={headerActionStyle}><FaFacebookMessenger /></button>
           <Link to="/settings" aria-label="Settings" style={headerActionStyle}><FaCog /></Link>
-          <AvatarBadge src={admin.profileImage || ''} name={admin.name || 'HR Office'} size={40} />
+          <AvatarBadge src={admin.profileImage || ''} name={admin.name || 'HR Office'} size={40} radius={16} fontSize={15} />
         </div>
       </nav>
 
       <div
         className="google-dashboard"
         style={{
-          display: 'flex',
-          gap: 14,
-          padding: '18px 14px 18px',
-          height: '100vh',
-          overflow: 'hidden',
-          background: 'var(--page-bg)',
-          width: '100%',
-          boxSizing: 'border-box',
+          display: 'flex', gap: 14, padding: '18px 14px 18px',
+          height: '100vh', overflow: 'hidden',
+          background: 'var(--page-bg)', width: '100%', boxSizing: 'border-box',
           alignItems: 'flex-start',
         }}
       >
@@ -300,23 +111,14 @@ export default function TerminatedEmployees() {
         <main
           className="google-main"
           style={{
-            flex: '1 1 0',
-            minWidth: 0,
-            maxWidth: 'none',
-            margin: 0,
-            boxSizing: 'border-box',
-            alignSelf: 'flex-start',
+            flex: '1 1 0', minWidth: 0, maxWidth: 'none', margin: 0,
+            boxSizing: 'border-box', alignSelf: 'flex-start',
             height: 'calc(100vh - var(--topbar-height) - 36px)',
             maxHeight: 'calc(100vh - var(--topbar-height) - 36px)',
-            overflowY: 'auto',
-            overflowX: 'hidden',
-            overscrollBehavior: 'contain',
-            WebkitOverflowScrolling: 'touch',
-            position: 'relative',
+            overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain',
+            WebkitOverflowScrolling: 'touch', position: 'relative',
             padding: '0 12px 12px 2px',
-            display: 'flex',
-            justifyContent: 'center',
-            width: '100%',
+            display: 'flex', justifyContent: 'center', width: '100%',
           }}
         >
           <div style={{ width: '100%', maxWidth: 1320 }}>
@@ -338,41 +140,23 @@ export default function TerminatedEmployees() {
             </section>
 
             <section style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
-              <div style={{ background: 'var(--surface-panel)', borderRadius: 18, border: '1px solid var(--border-soft)', padding: 18, boxShadow: 'var(--shadow-panel)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Archived Staff</div>
-                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: 'var(--text-primary)' }}>{summary.total}</div>
-                  </div>
-                  <div style={{ width: 46, height: 46, borderRadius: 16, background: '#fff1f2', border: '1px solid #fecdd3', color: '#e11d48', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
-                    <FaUsers />
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ background: 'var(--surface-panel)', borderRadius: 18, border: '1px solid var(--border-soft)', padding: 18, boxShadow: 'var(--shadow-panel)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Departments</div>
-                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: 'var(--text-primary)' }}>{summary.departments}</div>
-                  </div>
-                  <div style={{ width: 46, height: 46, borderRadius: 16, background: '#f3f8ff', border: '1px solid #dbe8f7', color: '#2563eb', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
-                    <FaHistory />
+              {[
+                { label: 'Archived Staff', value: summary.total, Icon: FaUsers, iconBg: '#fff1f2', iconBorder: '#fecdd3', iconColor: '#e11d48' },
+                { label: 'Departments', value: summary.departments, Icon: FaHistory, iconBg: '#f3f8ff', iconBorder: '#dbe8f7', iconColor: '#2563eb' },
+                { label: 'Last 30 Days', value: summary.recent, Icon: FaUserSlash, iconBg: '#fffbeb', iconBorder: '#fde68a', iconColor: '#d97706' },
+              ].map((card) => (
+                <div key={card.label} style={{ background: 'var(--surface-panel)', borderRadius: 18, border: '1px solid var(--border-soft)', padding: 18, boxShadow: 'var(--shadow-panel)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{card.label}</div>
+                      <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: 'var(--text-primary)' }}>{card.value}</div>
+                    </div>
+                    <div style={{ width: 46, height: 46, borderRadius: 16, background: card.iconBg, border: `1px solid ${card.iconBorder}`, color: card.iconColor, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
+                      <card.Icon />
+                    </div>
                   </div>
                 </div>
-              </div>
-
-              <div style={{ background: 'var(--surface-panel)', borderRadius: 18, border: '1px solid var(--border-soft)', padding: 18, boxShadow: 'var(--shadow-panel)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Last 30 Days</div>
-                    <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: 'var(--text-primary)' }}>{summary.recent}</div>
-                  </div>
-                  <div style={{ width: 46, height: 46, borderRadius: 16, background: '#fffbeb', border: '1px solid #fde68a', color: '#d97706', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
-                    <FaUserSlash />
-                  </div>
-                </div>
-              </div>
+              ))}
             </section>
 
             {errorMessage ? (
@@ -398,14 +182,14 @@ export default function TerminatedEmployees() {
                   <table style={{ width: '100%', minWidth: 1180, borderCollapse: 'collapse' }}>
                     <thead>
                       <tr style={{ background: 'var(--surface-muted)' }}>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Employee</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Department</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Reason</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Last Day</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Terminated</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>By</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Note</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'right', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Actions</th>
+                        <th style={thStyle}>Employee</th>
+                        <th style={thStyle}>Department</th>
+                        <th style={thStyle}>Reason</th>
+                        <th style={thStyle}>Last Day</th>
+                        <th style={thStyle}>Terminated</th>
+                        <th style={thStyle}>By</th>
+                        <th style={thStyle}>Note</th>
+                        <th style={{ ...thStyle, textAlign: 'right' }}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -413,19 +197,19 @@ export default function TerminatedEmployees() {
                         <tr key={employee.terminationId || employee.id || employee._name}>
                           <td style={{ padding: '16px 18px', borderBottom: '1px solid var(--border-soft)' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                              <AvatarBadge src={employee._profileImage} name={employee._name} size={50} />
+                              <AvatarBadge src={employee._profileImage} name={employee._name} size={50} radius={16} fontSize={15} />
                               <div style={{ minWidth: 0 }}>
                                 <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>{employee._name}</div>
                                 <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-muted)' }}>{employee.employeeId || '—'} · {employee._position}</div>
                               </div>
                             </div>
                           </td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)', fontWeight: 700, borderBottom: '1px solid var(--border-soft)' }}>{employee._department}</td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{employee._terminationReason}</td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{formatDate(employee._lastWorkingDate)}</td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{formatDate(employee._terminatedAt)}</td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-soft)' }}>{employee._terminatedBy}</td>
-                          <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-muted)', borderBottom: '1px solid var(--border-soft)', minWidth: 220, maxWidth: 280 }}>
+                          <td style={{ ...tdStyle, fontWeight: 700 }}>{employee._department}</td>
+                          <td style={tdStyle}>{employee._terminationReason}</td>
+                          <td style={tdStyle}>{formatDate(employee._lastWorkingDate)}</td>
+                          <td style={tdStyle}>{formatDate(employee._terminatedAt)}</td>
+                          <td style={tdStyle}>{employee._terminatedBy}</td>
+                          <td style={{ ...tdStyle, color: 'var(--text-muted)', minWidth: 220, maxWidth: 280 }}>
                             <div style={{ whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.5 }}>{employee._terminationNote || '—'}</div>
                           </td>
                           <td style={{ padding: '16px 18px', textAlign: 'right', borderBottom: '1px solid var(--border-soft)' }}>

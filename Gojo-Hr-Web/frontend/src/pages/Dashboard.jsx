@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import api from '../api';
-import { Link, useNavigate, useLocation } from "react-router-dom";
-import { AiFillPicture, AiFillVideoCamera } from "react-icons/ai";
-import { FaBell, FaFacebookMessenger, FaCog, FaUsers, FaBuilding, FaClipboardList, FaChalkboardTeacher, FaChartLine, FaChartPie, FaBirthdayCake, FaCalendarAlt, FaClock, FaArrowUp, FaArrowDown, FaMale, FaFemale, FaThumbsUp, FaTrashAlt, FaPlus } from "react-icons/fa";
-import { get, getDatabase, ref, update } from 'firebase/database';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { AiFillPicture, AiFillVideoCamera } from 'react-icons/ai';
+import { FaBell, FaFacebookMessenger, FaCog, FaUsers, FaBuilding, FaClipboardList, FaChalkboardTeacher, FaChartLine, FaChartPie, FaBirthdayCake, FaCalendarAlt, FaClock, FaArrowUp, FaArrowDown, FaMale, FaFemale, FaThumbsUp, FaTrashAlt, FaPlus } from 'react-icons/fa';
+import { get, getDatabase, onValue, ref, update } from 'firebase/database';
 import EthiopicCalendar from 'ethiopic-calendar';
 import './Dashboard.css';
 import '../styles/global.css';
@@ -11,1166 +11,68 @@ import DashboardOverview from '../components/DashboardOverview';
 import { app } from '../firebase';
 import { getEmployeeJob, getEmployeeMeta, getEmployeeName, getEmployeeProfileImage, getEmployeesSnapshot } from '../hrData';
 import { clearChatSummaryUnread, loadChatSummariesForContacts } from '../utils/chatSummary';
-import { createProfilePlaceholder, resolveAvatarImage, resolveProfileImage } from '../utils/profileImage';
-
-const DASHBOARD_RESOURCE_CACHE = new Map();
-const DASHBOARD_EMPLOYEES_CACHE_KEY = 'dashboard:employees:v2';
-const DASHBOARD_ATTENDANCE_CACHE_KEY = 'dashboard:attendance-summary:90:v1';
-const DASHBOARD_POSTS_CACHE_KEY = 'dashboard:posts:25';
-const DASHBOARD_CALENDAR_CACHE_KEY = 'dashboard:calendar:upcoming:120';
-const DASHBOARD_CHAT_ACTIVITY_CACHE_KEY = 'dashboard:chat-activity:v1';
-const POST_PAGE_SIZE = 25;
-const POST_IMAGE_MAX_DIMENSION = 1280;
-const POST_IMAGE_MAX_BYTES = 450 * 1024;
-const POST_IMAGE_PREVIEW_MAX_DIMENSION = 640;
-const POST_IMAGE_PREVIEW_MAX_BYTES = 140 * 1024;
-
-const DEFAULT_PROFILE_IMAGE = '/default-profile.png';
-
-const ETHIOPIAN_MONTHS = [
-  'Meskerem',
-  'Tikimt',
-  'Hidar',
-  'Tahsas',
-  'Tir',
-  'Yekatit',
-  'Megabit',
-  'Miyazya',
-  'Ginbot',
-  'Sene',
-  'Hamle',
-  'Nehase',
-  'Pagume',
-];
-
-const DEFAULT_ETHIOPIAN_SPECIAL_DAYS = [
-  { month: 1, day: 1, title: 'Enkutatash', notes: 'Ethiopian New Year.' },
-  { month: 1, day: 17, title: 'Meskel', notes: 'Finding of the True Cross.' },
-  { month: 4, day: 29, title: 'Genna', notes: 'Ethiopian Christmas.' },
-  { month: 5, day: 11, title: 'Timkat', notes: 'Epiphany celebration.' },
-  { month: 6, day: 23, title: 'Adwa Victory Day', notes: 'National remembrance day.' },
-  { month: 8, day: 23, title: 'International Labour Day', notes: 'Public holiday.' },
-  { month: 9, day: 1, title: "Patriots' Victory Day", notes: 'Public holiday.' },
-  { month: 9, day: 20, title: 'Downfall of the Derg', notes: 'National public holiday.' },
-];
-
-const YEAR_SPECIFIC_GOVERNMENT_CLOSURES_GREGORIAN = {
-  2017: [
-    { date: '2025-03-31', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2025-06-06', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2025-09-05', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
-  ],
-  2018: [
-    { date: '2026-03-20', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2026-05-27', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2026-08-26', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
-  ],
-  2019: [
-    { date: '2027-03-10', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2027-05-17', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2027-08-15', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
-  ],
-  2020: [
-    { date: '2028-02-27', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2028-05-05', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2028-08-04', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
-  ],
-  2021: [
-    { date: '2029-02-14', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2029-04-24', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2029-07-24', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
-  ],
-  2022: [
-    { date: '2030-02-03', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2030-04-13', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2030-07-13', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
-  ],
-  2023: [
-    { date: '2031-01-23', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2031-04-02', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2031-07-02', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
-  ],
-  2024: [
-    { date: '2032-01-11', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2032-03-21', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2032-06-20', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
-  ],
-  2025: [
-    { date: '2032-12-31', title: 'Eid al-Fitr', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2033-03-10', title: 'Eid al-Adha', notes: 'Government holiday (may vary by moon sighting).' },
-    { date: '2033-06-09', title: 'Mawlid', notes: 'Government holiday (may vary by moon sighting).' },
-  ],
-};
-
-const CALENDAR_MANAGER_ROLES = new Set([
-  'hr',
-  'hr_admin',
-  'hr_officer',
-  'human_resource',
-  'human_resources',
-  'admin',
-  'admins',
-  'school_admin',
-  'school_admins',
-  'registrar',
-  'registerer',
-]);
-
-const buildYearSpecificGovernmentClosures = (ethiopianYear) => {
-  const gregorianEvents = YEAR_SPECIFIC_GOVERNMENT_CLOSURES_GREGORIAN[ethiopianYear] || [];
-
-  return gregorianEvents
-    .map((eventItem) => {
-      const [year, month, day] = String(eventItem.date || '').split('-').map(Number);
-      if (!year || !month || !day) {
-        return null;
-      }
-
-      const ethiopianDate = EthiopicCalendar.ge(year, month, day);
-      if (ethiopianDate.year !== ethiopianYear) {
-        return null;
-      }
-
-      return {
-        month: ethiopianDate.month,
-        day: ethiopianDate.day,
-        title: eventItem.title,
-        notes: eventItem.notes,
-      };
-    })
-    .filter(Boolean);
-};
-
-const getOrthodoxEasterDate = (gregorianYear) => {
-  const a = gregorianYear % 4;
-  const b = gregorianYear % 7;
-  const c = gregorianYear % 19;
-  const d = (19 * c + 15) % 30;
-  const e = (2 * a + 4 * b - d + 34) % 7;
-  const julianMonth = Math.floor((d + e + 114) / 31);
-  const julianDay = ((d + e + 114) % 31) + 1;
-
-  const julianDateAsGregorian = new Date(gregorianYear, julianMonth - 1, julianDay);
-  julianDateAsGregorian.setDate(julianDateAsGregorian.getDate() + 13);
-  return julianDateAsGregorian;
-};
-
-const buildMovableOrthodoxClosures = (ethiopianYear) => {
-  const movableEvents = [];
-  const seenEventKeys = new Set();
-
-  [ethiopianYear + 7, ethiopianYear + 8].forEach((gregorianYear) => {
-    const easterDate = getOrthodoxEasterDate(gregorianYear);
-    const goodFridayDate = new Date(easterDate);
-    goodFridayDate.setDate(goodFridayDate.getDate() - 2);
-
-    [
-      {
-        title: 'Siklet',
-        notes: 'Good Friday school closure.',
-        date: goodFridayDate,
-      },
-      {
-        title: 'Fasika',
-        notes: 'Orthodox Easter school closure.',
-        date: easterDate,
-      },
-    ].forEach((eventItem) => {
-      const ethDate = EthiopicCalendar.ge(
-        eventItem.date.getFullYear(),
-        eventItem.date.getMonth() + 1,
-        eventItem.date.getDate(),
-      );
-
-      if (ethDate.year !== ethiopianYear) {
-        return;
-      }
-
-      const eventKey = `${ethDate.year}-${ethDate.month}-${ethDate.day}-${eventItem.title}`;
-      if (seenEventKeys.has(eventKey)) {
-        return;
-      }
-
-      seenEventKeys.add(eventKey);
-      movableEvents.push({
-        month: ethDate.month,
-        day: ethDate.day,
-        title: eventItem.title,
-        notes: eventItem.notes,
-      });
-    });
-  });
-
-  return movableEvents;
-};
-
-const buildDefaultCalendarEvents = (ethiopianYear) => [
-  ...DEFAULT_ETHIOPIAN_SPECIAL_DAYS,
-  ...buildMovableOrthodoxClosures(ethiopianYear),
-  ...buildYearSpecificGovernmentClosures(ethiopianYear),
-].map((eventItem) => {
-  const gregorianDate = EthiopicCalendar.eg(ethiopianYear, eventItem.month, eventItem.day);
-  const isoDate = `${gregorianDate.year}-${String(gregorianDate.month).padStart(2, '0')}-${String(gregorianDate.day).padStart(2, '0')}`;
-
-  return {
-    id: `default-${ethiopianYear}-${eventItem.month}-${eventItem.day}`,
-    title: eventItem.title,
-    type: 'no-class',
-    category: 'no-class',
-    subType: 'general',
-    notes: eventItem.notes,
-    gregorianDate: isoDate,
-    ethiopianDate: {
-      year: ethiopianYear,
-      month: eventItem.month,
-      day: eventItem.day,
-    },
-    createdAt: '',
-    createdBy: 'system-default',
-    isDefault: true,
-    showInUpcomingDeadlines: false,
-    source: 'default-closure',
-  };
-});
-
-function isLikelyVideoMedia(mediaType, mediaUrl) {
-  if (String(mediaType || '').toLowerCase().startsWith('video/')) {
-    return true;
-  }
-
-  return /\.(mp4|mov|webm|ogg|m4v)(?:$|\?)/i.test(String(mediaUrl || ''));
-}
-
-function getConversationSortTime(rawValue) {
-  if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
-    return rawValue;
-  }
-
-  if (typeof rawValue === 'string') {
-    const numericValue = Number(rawValue);
-    if (Number.isFinite(numericValue)) {
-      return numericValue;
-    }
-
-    const parsedValue = new Date(rawValue).getTime();
-    if (Number.isFinite(parsedValue)) {
-      return parsedValue;
-    }
-  }
-
-  return 0;
-}
-
-function formatFeedTimestamp(rawValue) {
-  const timestamp = getConversationSortTime(rawValue);
-
-  if (!timestamp) {
-    return 'Just now';
-  }
-
-  const diffMs = Date.now() - timestamp;
-
-  if (diffMs < 60 * 1000) {
-    return 'Just now';
-  }
-
-  const diffMinutes = Math.floor(diffMs / (60 * 1000));
-  if (diffMinutes < 60) {
-    return `${diffMinutes}m`;
-  }
-
-  const diffHours = Math.floor(diffMinutes / 60);
-  if (diffHours < 24) {
-    return `${diffHours}h`;
-  }
-
-  const diffDays = Math.floor(diffHours / 24);
-  if (diffDays < 7) {
-    return `${diffDays}d`;
-  }
-
-  return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
-
-function getCachedDashboardResource(cacheKey, loader, ttlMs = 60 * 1000) {
-  const now = Date.now();
-  const existing = DASHBOARD_RESOURCE_CACHE.get(cacheKey);
-
-  if (existing?.promise) {
-    return existing.promise;
-  }
-
-  if (existing && Object.prototype.hasOwnProperty.call(existing, 'data') && (now - existing.timestamp) < ttlMs) {
-    return Promise.resolve(existing.data);
-  }
-
-  const promise = loader()
-    .then((data) => {
-      DASHBOARD_RESOURCE_CACHE.set(cacheKey, { data, timestamp: Date.now() });
-      return data;
-    })
-    .catch((error) => {
-      DASHBOARD_RESOURCE_CACHE.delete(cacheKey);
-      throw error;
-    });
-
-  DASHBOARD_RESOURCE_CACHE.set(cacheKey, { promise, timestamp: now });
-  return promise;
-}
-
-function setCachedDashboardResource(cacheKey, data) {
-  DASHBOARD_RESOURCE_CACHE.set(cacheKey, { data, timestamp: Date.now() });
-}
-
-function normalizeDashboardCollection(items) {
-  if (Array.isArray(items)) {
-    return items;
-  }
-
-  return Object.entries(items || {}).map(([id, payload]) => ({
-    ...(payload || {}),
-    id,
-  }));
-}
-
-function StatCard({ title, value, icon, color }) {
-  return (
-    <div style={{ background: 'var(--surface-panel, #fff)', borderRadius: 16, padding: 16, minWidth: 180, flex: 1, border: '1px solid var(--border-soft, #d7e7fb)', boxShadow: 'var(--shadow-soft, 0 10px 24px rgba(0,122,251,0.1))', display: 'flex', alignItems: 'center', gap: 12 }}>
-      <div style={{ width: 46, height: 46, background: 'var(--accent-soft, #e7f2ff)', color: color || 'var(--accent-strong, #007afb)', border: '1px solid var(--border-strong, #b5d2f8)', borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{icon}</div>
-      <div>
-        <div style={{ fontSize: 11, color: 'var(--text-muted, #64748b)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{title}</div>
-        <div style={{ marginTop: 3, fontSize: 24, fontWeight: 800, color: 'var(--text-primary, #0f172a)', lineHeight: 1.1 }}>{value}</div>
-      </div>
-    </div>
-  )
-}
-
-function getSafeProfileImage(profileImage) {
-  return resolveProfileImage(profileImage);
-}
-
-function normalizePostLikes(likes) {
-  if (Array.isArray(likes)) {
-    return likes.reduce((accumulator, value) => {
-      const normalizedKey = String(value || '').trim();
-      if (normalizedKey) {
-        accumulator[normalizedKey] = true;
-      }
-      return accumulator;
-    }, {});
-  }
-
-  if (likes && typeof likes === 'object') {
-    return Object.entries(likes).reduce((accumulator, [key, value]) => {
-      const normalizedKey = String(key || '').trim();
-      if (normalizedKey && value) {
-        accumulator[normalizedKey] = true;
-      }
-      return accumulator;
-    }, {});
-  }
-
-  return {};
-}
-
-function isPostLikedByActor(post, actorId) {
-  const normalizedActorId = String(actorId || '').trim();
-  if (!normalizedActorId) {
-    return false;
-  }
-
-  return Boolean(normalizePostLikes(post?.likes)[normalizedActorId]);
-}
-
-function getResolvedLikeCount(post) {
-  const explicitCount = Number(post?.likeCount);
-  if (Number.isFinite(explicitCount) && explicitCount >= 0) {
-    return explicitCount;
-  }
-
-  return Object.keys(normalizePostLikes(post?.likes)).length;
-}
-
-function Avatar({ src, alt, name, size = 40, style = {}, imageStyle = {}, textSize = 14 }) {
-  const [hasImageError, setHasImageError] = useState(false);
-  const displayName = name || alt || 'User';
-  const resolvedSrc = hasImageError
-    ? createProfilePlaceholder(displayName)
-    : resolveAvatarImage(displayName, src);
-
-  useEffect(() => {
-    setHasImageError(false);
-  }, [src]);
-
-  const baseStyle = {
-    width: size,
-    height: size,
-    borderRadius: '50%',
-    overflow: 'hidden',
-    flexShrink: 0,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    background: '#ffffff',
-    border: '1px solid var(--border-soft, #dbe2f2)',
-    color: 'var(--accent-strong, #007AFB)',
-    fontWeight: 800,
-    letterSpacing: '0.04em',
-    userSelect: 'none',
-    ...style,
-  };
-
-  return (
-    <div style={baseStyle}>
-      <img
-        src={resolvedSrc}
-        alt={alt || name || 'User avatar'}
-        onError={(event) => {
-          const fallbackSrc = createProfilePlaceholder(displayName);
-          if (event.currentTarget.src !== fallbackSrc) {
-            event.currentTarget.src = fallbackSrc;
-          }
-          setHasImageError(true);
-        }}
-        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', ...imageStyle }}
-      />
-    </div>
-  );
-}
-
-function LineChart({ data = [], width = 420, height = 120, color = '#4b6cb7' }) {
-  if (!data.length) return null;
-  const max = Math.max(...data);
-  const points = data.map((d, i) => `${(i * (width / (data.length - 1))).toFixed(2)},${(height - (d / max) * height).toFixed(2)}`).join(' ');
-  const pathD = `M ${points.split(' ').map(p => p).join(' L ')}`;
-  return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-      <defs>
-        <linearGradient id="grad" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.18" />
-          <stop offset="100%" stopColor={color} stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <polyline fill="url(#grad)" points={`${points} ${width},${height} 0,${height}`} stroke="none" />
-      <path d={pathD} fill="none" stroke={color} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
-      {data.map((d, i) => (
-        <circle key={i} cx={(i * (width / (data.length - 1))).toFixed(2)} cy={(height - (d / max) * height).toFixed(2)} r="3" fill={color} />
-      ))}
-    </svg>
-  )
-}
-
-function GrowthTrendChart({ points = [], mode = 'monthly' }) {
-  const [hoverIdx, setHoverIdx] = useState(-1);
-  const uid = useMemo(() => Math.random().toString(36).slice(2, 9), []);
-  if (!points || !points.length) return null;
-
-  const width = 920;
-  const height = 320;
-  const leftPad = 64;
-  const rightPad = 48;
-  const topPad = 48;
-  const bottomPad = 76;
-  const chartWidth = width - leftPad - rightPad;
-  const chartHeight = height - topPad - bottomPad;
-  const stepX = points.length > 1 ? chartWidth / (points.length) : chartWidth;
-  const maxCount = Math.max(1, ...points.map((p) => Math.max(p.totalCount || 0, p.maleCount || 0, p.femaleCount || 0)));
-
-  const yFor = (v) => topPad + (1 - (Math.max(0, v || 0) / maxCount)) * chartHeight;
-
-  const colors = { total: '#10b981', male: '#1d4ed8', female: '#db2777' };
-
-  // bar layout
-  const groupWidth = Math.min(64, stepX * 0.9);
-  const barWidth = Math.max(10, Math.floor((groupWidth - 8) / 3));
-  const gap = 4;
-
-  return (
-    <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Employee growth (grouped bars)" style={{ overflow: 'visible' }}>
-      <defs>
-        <filter id={`shadow-${uid}`} x="-50%" y="-50%" width="200%" height="200%">
-          <feDropShadow dx="0" dy="6" stdDeviation="8" floodColor="#0b1220" floodOpacity="0.06" />
-        </filter>
-      </defs>
-
-      {/* background panel */}
-      <rect x={leftPad - 12} y={topPad - 10} width={chartWidth + 24} height={chartHeight + 20} rx={12} fill="var(--surface-panel, #fff)" stroke="var(--border-soft, #eef3ff)" />
-
-      {/* y grid */}
-      {Array.from({ length: 4 }).map((_, i) => {
-        const val = Math.round((maxCount * i) / 3);
-        const y = yFor(val);
-        return (
-          <g key={`tick-${i}`}>
-            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="var(--border-soft, #f0f6ff)" />
-            <text x={leftPad - 12} y={y + 4} fontSize="11" fill="var(--text-muted, #64748b)" textAnchor="end" fontWeight="700">{val}</text>
-          </g>
-        );
-      })}
-
-      {/* bars grouped per period */}
-      {points.map((pt, idx) => {
-        const xCenter = leftPad + idx * stepX + stepX / 2;
-        const startX = xCenter - groupWidth / 2;
-        const totalH = Math.max(0, chartHeight - (yFor(pt.totalCount || 0) - topPad));
-        const maleH = Math.max(0, chartHeight - (yFor(pt.maleCount || 0) - topPad));
-        const femaleH = Math.max(0, chartHeight - (yFor(pt.femaleCount || 0) - topPad));
-
-        const totalX = startX;
-        const maleX = startX + (barWidth + gap);
-        const femaleX = startX + 2 * (barWidth + gap);
-
-        return (
-          <g key={`grp-${idx}`} onMouseEnter={() => setHoverIdx(idx)} onMouseLeave={() => setHoverIdx(-1)}>
-            <rect x={totalX} y={topPad + (chartHeight - totalH)} width={barWidth} height={totalH} rx={4} fill={colors.total} opacity={0.96} style={{ filter: `url(#shadow-${uid})` }} />
-            <rect x={maleX} y={topPad + (chartHeight - maleH)} width={barWidth} height={maleH} rx={4} fill={colors.male} opacity={0.98} />
-            <rect x={femaleX} y={topPad + (chartHeight - femaleH)} width={barWidth} height={femaleH} rx={4} fill={colors.female} opacity={0.98} />
-
-            {(idx % Math.max(1, Math.ceil(points.length / 6)) === 0 || idx === points.length - 1) ? (
-              <text x={xCenter} y={height - 18} fontSize="12" textAnchor="middle" fill="var(--text-muted, #64748b)" fontWeight="800">{pt.label}</text>
-            ) : null}
-          </g>
-        );
-      })}
-
-      {/* legend */}
-      <g>
-        <rect x={width - rightPad - 248} y={14} width={236} height={44} rx={12} fill="var(--surface-panel, #fff)" stroke="var(--border-soft, #eef3ff)" />
-        <g transform={`translate(${width - rightPad - 228}, 34)`}>
-          <g>
-            <rect x={0} y={-8} width={14} height={14} rx={3} fill={colors.total} />
-            <text x={20} y={4} fontSize="11" fill={colors.total} fontWeight="800">Total</text>
-          </g>
-          <g transform="translate(74,0)">
-            <rect x={0} y={-8} width={14} height={14} rx={3} fill={colors.male} />
-            <text x={20} y={4} fontSize="11" fill={colors.male} fontWeight="800">Male</text>
-          </g>
-          <g transform="translate(136,0)">
-            <rect x={0} y={-8} width={14} height={14} rx={3} fill={colors.female} />
-            <text x={20} y={4} fontSize="11" fill={colors.female} fontWeight="800">Female</text>
-          </g>
-        </g>
-      </g>
-
-      {/* title */}
-      <text x={leftPad} y={28} fontSize="15" fill="var(--text-primary, #07104a)" fontWeight="900">{mode === 'monthly' ? 'Monthly Employee Registrations' : 'Yearly Employee Registrations'}</text>
-
-      {/* hover tooltip */}
-      {hoverIdx >= 0 ? (() => {
-        const p = points[hoverIdx];
-        const cx = leftPad + hoverIdx * stepX + stepX / 2;
-        const boxW = 160;
-        const tx = Math.min(width - rightPad - boxW - 8, Math.max(leftPad + 8, cx - boxW / 2));
-        return (
-          <g transform={`translate(${tx}, ${topPad + 8})`}>
-            <rect x="0" y="0" width={boxW} height="76" rx="10" fill="var(--surface-strong, #07104a)" opacity="0.96" />
-            <text x="12" y="18" fontSize="12" fill="#fff" fontWeight="800">{p.label}</text>
-            <text x="12" y="36" fontSize="12" fill="#a7f3d0">Total: {p.totalCount || 0}</text>
-            <text x="12" y="54" fontSize="12" fill="#bfdbfe">Male: {p.maleCount || 0}</text>
-            <text x="92" y="54" fontSize="12" fill="#ffd6ea">Female: {p.femaleCount || 0}</text>
-          </g>
-        );
-      })() : null}
-    </svg>
-  );
-}
-
-function DonutChart({ values = [], colors = [], size = 120, centerValue = '', centerLabel = '' }) {
-  const total = values.reduce((sum, value) => sum + value, 0) || 1;
-  const strokeWidth = 18;
-  const radius = (size - strokeWidth) / 2 - 2;
-  const circumference = 2 * Math.PI * radius;
-  let offset = 0;
-
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Gender distribution chart">
-      <defs>
-        <filter id="genderDonutGlow" x="-50%" y="-50%" width="200%" height="200%">
-          <feDropShadow dx="0" dy="10" stdDeviation="10" floodColor="#0f172a" floodOpacity="0.1" />
-        </filter>
-      </defs>
-      <circle
-        cx={size / 2}
-        cy={size / 2}
-        r={radius}
-        fill="none"
-        stroke="var(--border-soft, #e8eefc)"
-        strokeWidth={strokeWidth}
-      />
-      <g transform={`rotate(-90 ${size / 2} ${size / 2})`} style={{ filter: 'url(#genderDonutGlow)' }}>
-        {values.map((value, index) => {
-          const dashLength = (value / total) * circumference;
-          const dashOffset = -offset;
-          offset += dashLength;
-          return (
-            <circle
-              key={index}
-              cx={size / 2}
-              cy={size / 2}
-              r={radius}
-              fill="none"
-              stroke={colors[index] || ['#4b6cb7', '#e0245e'][index % 2]}
-              strokeWidth={strokeWidth}
-              strokeDasharray={`${dashLength} ${circumference - dashLength}`}
-              strokeDashoffset={dashOffset}
-              strokeLinecap="round"
-            />
-          );
-        })}
-      </g>
-      <circle cx={size / 2} cy={size / 2} r={radius - strokeWidth / 2 + 1} fill="var(--surface-panel, #fff)" />
-      {centerValue ? <text x="50%" y="48%" textAnchor="middle" fontSize="22" fontWeight="900" fill="var(--text-primary, #111827)">{centerValue}</text> : null}
-      {centerLabel ? <text x="50%" y="61%" textAnchor="middle" fontSize="10" fontWeight="800" fill="var(--text-muted, #64748b)">{centerLabel}</text> : null}
-    </svg>
-  );
-}
-
-function GenderBar({ male = 0, female = 0, width = 250, height = 86 }) {
-  const total = Math.max(1, male + female);
-  const barX = 8;
-  const barY = 16;
-  const barWidth = width - 16;
-  const barHeight = 16;
-  const maleWidth = (male / total) * barWidth;
-  const femaleWidth = (female / total) * barWidth;
-
-  return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Gender comparison bar">
-      <rect x={barX} y={barY} width={barWidth} height={barHeight} rx={8} fill="var(--surface-accent, #edf2ff)" />
-      <rect x={barX} y={barY} width={maleWidth} height={barHeight} rx={8} fill="#4b6cb7" />
-      <rect x={barX + maleWidth} y={barY} width={femaleWidth} height={barHeight} rx={8} fill="#ec4899" />
-      <g transform={`translate(${barX}, 52)`}>
-        <circle cx="5" cy="0" r="5" fill="#4b6cb7" />
-        <text x="16" y="4" fontSize="11" fill="var(--text-secondary, #334155)" fontWeight="800">Male {male}</text>
-      </g>
-      <g transform={`translate(${width / 2 + 6}, 52)`}>
-        <circle cx="5" cy="0" r="5" fill="#ec4899" />
-        <text x="16" y="4" fontSize="11" fill="var(--text-secondary, #334155)" fontWeight="800">Female {female}</text>
-      </g>
-      <text x={barX} y={78} fontSize="10" fill="var(--text-muted, #64748b)" fontWeight="700">{Math.round((male / total) * 100)}%</text>
-      <text x={width - barX} y={78} textAnchor="end" fontSize="10" fill="var(--text-muted, #64748b)" fontWeight="700">{Math.round((female / total) * 100)}%</text>
-    </svg>
-  );
-}
-
-const QUALIFICATION_GRAPH_CONFIG = [
-  { key: 'Diploma', label: 'Diploma', color: '#0ea5e9' },
-  { key: 'Degree', label: 'Degree', color: '#4b6cb7' },
-  { key: 'Masters', label: 'Masters', color: '#8b5cf6' },
-  { key: 'PhD', label: 'PhD', color: '#ec4899' },
-  { key: 'Prof.', label: 'Prof.', color: '#f59e0b' },
-  { key: 'Other', label: 'Other', color: '#64748b' },
-];
-
-function normalizeEducationQualification(employee = {}) {
-  const degreeType = String(
-    employee?.education?.degreeType || employee?.profileData?.education?.degreeType || ''
-  )
-    .trim()
-    .toLowerCase();
-  const highestQualification = String(
-    employee?.education?.highestQualification || employee?.profileData?.education?.highestQualification || ''
-  )
-    .trim()
-    .toLowerCase();
-  const combined = `${degreeType} ${highestQualification}`.trim();
-
-  if (!combined) return '';
-  if (combined.includes('prof')) return 'Prof.';
-  if (combined.includes('phd') || combined.includes('doctor')) return 'PhD';
-  if (combined.includes('msc') || combined.includes('master') || combined.includes('mba')) return 'Masters';
-  if (combined.includes('bsc') || combined.includes('bachelor') || combined.includes('degree')) return 'Degree';
-  if (combined.includes('diploma')) return 'Diploma';
-  return 'Other';
-}
-
-function QualificationChart({ items = [], total = 0 }) {
-  if (!items.some((item) => Number(item.count || 0) > 0)) {
-    return <div style={{ fontSize: 12, color: 'var(--text-muted, #6b7280)' }}>No qualification data available yet.</div>;
-  }
-
-  const safeTotal = Math.max(1, total);
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      {items.map((item) => {
-        const count = Number(item.count || 0);
-        const percentage = Math.round((count / safeTotal) * 100);
-
-        return (
-          <div key={item.key} style={{ display: 'grid', gridTemplateColumns: '84px 1fr 62px', alignItems: 'center', gap: 10 }}>
-            <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-secondary, #334155)' }}>{item.label}</div>
-            <div style={{ height: 12, borderRadius: 999, overflow: 'hidden', background: 'var(--surface-accent, #eef2ff)', border: '1px solid var(--border-soft, #dbe2f2)' }}>
-              <div style={{ width: `${percentage}%`, height: '100%', background: item.color, borderRadius: 999 }} />
-            </div>
-            <div style={{ textAlign: 'right', fontSize: 12, fontWeight: 800, color: 'var(--text-muted, #64748b)' }}>{count} ({percentage}%)</div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function PositionChart({ employees = [], maxBars = 6 }) {
-  const counts = employees.reduce((acc, e) => {
-    const p = (e.position || e.role || 'Other').trim();
-    acc[p] = (acc[p] || 0) + 1;
-    return acc;
-  }, {});
-  const list = Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0, maxBars);
-  const total = employees.length || 1;
-  return (
-    <div style={{ width: '100%', padding: 8 }}>
-      {list.map(([pos, cnt], i) => {
-        const pct = Math.round((cnt/total)*100);
-        return (
-          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-            <div style={{ width: 120, fontSize: 13, color: 'var(--text-secondary, #374151)' }}>{pos}</div>
-            <div style={{ flex: 1, background: 'var(--surface-accent, #eef2ff)', height: 10, borderRadius: 6, overflow: 'hidden' }}>
-              <div style={{ width: `${pct}%`, height: '100%', background: '#4b6cb7' }}></div>
-            </div>
-            <div style={{ width: 46, textAlign: 'right', fontSize: 13, color: 'var(--text-muted, #6b7280)' }}>{cnt} ({pct}%)</div>
-          </div>
-        )
-      })}
-      {list.length === 0 && <div className="muted">No position data</div>}
-    </div>
-  )
-}
-
-function Sparkline({ data = [], color = 'var(--accent, #4b6cb7)', width = 100, height = 28 }) {
-  if (!data.length) return null;
-  const max = Math.max(...data);
-  const points = data.map((d, i) => `${(i * (width / (data.length - 1))).toFixed(2)},${(height - (d / max) * height).toFixed(2)}`).join(' ');
-  const pathD = `M ${points.split(' ').map(p => p).join(' L ')}`;
-  return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-      <path d={pathD} fill="none" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-function AttendanceTrendChart({ points = [], width = 700, height = 260, mode = 'bar' }) {
-  if (!points || !points.length) return null;
-
-  const [hoveredIndex, setHoveredIndex] = useState(-1);
-
-  const leftPad = 48;
-  const rightPad = 36;
-  const topPad = 28;
-  const bottomPad = 48;
-  const chartWidth = width - leftPad - rightPad;
-  const chartHeight = height - topPad - bottomPad;
-  const maxCount = Math.max(1, ...points.map((p) => Math.max(p.presentCount || 0, p.lateCount || 0, p.absentCount || 0)));
-  const stepX = points.length > 1 ? chartWidth / (points.length - 1) : chartWidth;
-  const xForIndex = (index) => (points.length === 1 ? leftPad + chartWidth / 2 : leftPad + index * stepX);
-
-  const yForCount = (v) => topPad + (1 - (Math.max(0, v || 0) / maxCount)) * chartHeight;
-  const yForRate = (r) => topPad + (1 - (Math.max(0, Math.min(100, r || 0)) / 100)) * chartHeight;
-
-  const groupWidth = Math.min(60, stepX * 0.9);
-  const singleBarWidth = Math.max(6, Math.floor((groupWidth - 8) / 3));
-  const gapBetweenBars = 4;
-  const chartBottom = topPad + chartHeight;
-
-  const countTicks = Array.from({ length: 4 }, (_, index) => {
-    const rawValue = (maxCount * index) / 3;
-    return {
-      index,
-      rawValue,
-      label: Math.round(rawValue),
-    };
-  });
-  const rateTicks = [0, 25, 50, 75, 100];
-  const barColors = {
-    present: 'var(--success, #16a34a)',
-    late: 'var(--warning, #d97706)',
-    absent: 'var(--danger, #dc2626)',
-  };
-
-  const ratePoints = points.map((p, i) => ({ x: xForIndex(i), y: yForRate(p.rate || 0) }));
-  const rateLinePath = ratePoints.length ? `M ${ratePoints.map((pt) => `${pt.x},${pt.y}`).join(' L ')}` : '';
-  const firstRateX = ratePoints.length ? ratePoints[0].x : leftPad;
-  const lastRateX = ratePoints.length ? ratePoints[ratePoints.length - 1].x : leftPad;
-  const rateAreaPath = ratePoints.length ? `M ${firstRateX},${chartBottom} L ${ratePoints.map((pt) => `${pt.x},${pt.y}`).join(' L ')} L ${lastRateX},${chartBottom} Z` : '';
-  const hoveredPoint = hoveredIndex >= 0 ? points[hoveredIndex] : null;
-  const hoveredMeta = hoveredIndex >= 0 ? ratePoints[hoveredIndex] : null;
-
-  return (
-    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attendance trend" style={{ display: 'block', width: '100%', minHeight: height }}>
-      <defs>
-        <linearGradient id="attendanceAreaGradient" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="var(--accent, #60a5fa)" stopOpacity="0.18" />
-          <stop offset="100%" stopColor="var(--accent, #60a5fa)" stopOpacity="0.02" />
-        </linearGradient>
-      </defs>
-
-      {/* background grid */}
-      <g>
-        <rect x={leftPad} y={topPad} width={chartWidth} height={chartHeight} fill="var(--surface-panel, #fcfdff)" stroke="var(--border-soft, #e2e8f0)" rx={8} />
-      </g>
-
-      {countTicks.map((tick) => {
-        const y = yForCount(tick.rawValue);
-        return (
-          <g key={`count-tick-${tick.index}-${tick.label}`}>
-            <line x1={leftPad} x2={width - rightPad} y1={y} y2={y} stroke="var(--border-soft, #eef2ff)" strokeDasharray="4 6" />
-            <text x={leftPad + 10} y={y + 4} textAnchor="start" fontSize="10" fill="var(--text-muted, #64748b)" fontWeight="700">{tick.label}</text>
-          </g>
-        );
-      })}
-
-      {rateTicks.map((tickValue) => {
-        const y = yForRate(tickValue);
-        return (
-          <g key={`rate-tick-${tickValue}`}> 
-            <text x={width - rightPad - 10} y={y + 4} textAnchor="end" fontSize="10" fill="var(--accent-strong, #3157b7)" fontWeight="700">{tickValue}%</text>
-          </g>
-        );
-      })}
-
-      {mode === 'bar'
-        ? points.map((point, index) => {
-            const xCenter = xForIndex(index);
-            const leftStart = xCenter - groupWidth / 2;
-            const presentValue = Number(point.presentCount) || 0;
-            const lateValue = Number(point.lateCount) || 0;
-            const absentValue = Number(point.absentCount) || 0;
-
-            const bars = [
-              { key: 'present', value: presentValue, x: leftStart },
-              { key: 'late', value: lateValue, x: leftStart + singleBarWidth + gapBetweenBars },
-              { key: 'absent', value: absentValue, x: leftStart + (singleBarWidth + gapBetweenBars) * 2 },
-            ];
-
-            return (
-              <g key={`bars-${point.date || index}-${index}`}>
-                {bars.map((bar) => {
-                  const topY = yForCount(bar.value);
-                  const barHeight = Math.max(0, chartBottom - topY);
-                  return (
-                    <rect key={`${bar.key}-${index}`} x={bar.x} y={topY} width={singleBarWidth} height={barHeight} rx="2" fill={barColors[bar.key]} opacity={hoveredIndex === index ? 1 : 0.92} />
-                  );
-                })}
-              </g>
-            );
-          })
-        : null}
-
-      {mode === 'line' && rateAreaPath ? <path d={rateAreaPath} fill="url(#attendanceAreaGradient)" /> : null}
-      {mode === 'line' && rateLinePath ? <path d={rateLinePath} fill="none" stroke="#3157b7" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" /> : null}
-
-      {points.map((point, index) => {
-        const x = xForIndex(index);
-        const y = yForRate(point.rate);
-        return (
-          <g key={`rate-point-${index}`}>
-            {mode === 'line' ? <circle cx={x} cy={y} r={hoveredIndex === index ? '5' : '4'} fill="#fff" stroke="#3157b7" strokeWidth="1.8" /> : null}
-            {(index % Math.max(1, Math.ceil(points.length / 6)) === 0 || index === points.length - 1) ? (
-              <text x={x} y={chartBottom + 18} textAnchor="middle" fontSize="10" fill="var(--text-muted, #64748b)" fontWeight="700">{point.label}</text>
-            ) : null}
-          </g>
-        );
-      })}
-
-      {points.map((point, index) => {
-        const xCenter = xForIndex(index);
-        return (
-          <rect
-            key={`hover-zone-${point.date || index}`}
-            x={xCenter - Math.max(22, stepX / 2)}
-            y={topPad}
-            width={Math.max(44, stepX)}
-            height={chartHeight}
-            fill="transparent"
-            onMouseEnter={() => setHoveredIndex(index)}
-            onMouseMove={() => setHoveredIndex(index)}
-            onMouseLeave={() => setHoveredIndex(-1)}
-          />
-        );
-      })}
-
-      {hoveredPoint && hoveredMeta ? (
-        <g pointerEvents="none">
-          <line x1={hoveredMeta.x} x2={hoveredMeta.x} y1={topPad} y2={chartBottom} stroke="#c7d2fe" strokeDasharray="4 5" />
-          <rect
-            x={Math.max(leftPad, Math.min(width - rightPad - 168, hoveredMeta.x - 84))}
-            y={topPad + 8}
-            width="168"
-            height="74"
-            rx="12"
-            fill="#ffffff"
-            stroke="#dbeafe"
-          />
-          <text x={Math.max(leftPad + 12, Math.min(width - rightPad - 156, hoveredMeta.x - 72))} y={topPad + 28} fontSize="11" fill="#64748b" fontWeight="800">{hoveredPoint.label}</text>
-          <text x={Math.max(leftPad + 12, Math.min(width - rightPad - 156, hoveredMeta.x - 72))} y={topPad + 46} fontSize="12" fill="#0f172a" fontWeight="700">Rate: {hoveredPoint.rate || 0}%</text>
-          <text x={Math.max(leftPad + 12, Math.min(width - rightPad - 156, hoveredMeta.x - 72))} y={topPad + 62} fontSize="11" fill="#166534" fontWeight="700">Present: {hoveredPoint.presentCount || 0}</text>
-          <text x={Math.max(leftPad + 82, Math.min(width - rightPad - 86, hoveredMeta.x - 2))} y={topPad + 62} fontSize="11" fill="#92400e" fontWeight="700">Late: {hoveredPoint.lateCount || 0}</text>
-          <text x={Math.max(leftPad + 12, Math.min(width - rightPad - 156, hoveredMeta.x - 72))} y={topPad + 76} fontSize="11" fill="#991b1b" fontWeight="700">Absent: {hoveredPoint.absentCount || 0}</text>
-        </g>
-      ) : null}
-
-      <g>
-        <text x={leftPad} y={18} fontSize="11" fill="#475569" fontWeight="800">{mode === 'line' ? 'Attendance Rate Trend' : 'Attendance Records (count)'}</text>
-        <g transform={`translate(${leftPad + 168}, 11)`}>
-          {mode === 'bar' ? (
-            <>
-              <rect x="0" y="0" width="10" height="10" fill="#16a34a" rx="2" />
-              <text x="14" y="9" fontSize="10" fill="#166534" fontWeight="700">Present</text>
-              <rect x="74" y="0" width="10" height="10" fill="#d97706" rx="2" />
-              <text x="88" y="9" fontSize="10" fill="#92400e" fontWeight="700">Late</text>
-              <rect x="130" y="0" width="10" height="10" fill="#dc2626" rx="2" />
-              <text x="144" y="9" fontSize="10" fill="#991b1b" fontWeight="700">Absent</text>
-            </>
-          ) : (
-            <>
-              <line x1="0" y1="5" x2="26" y2="5" stroke="#3157b7" strokeWidth="2.4" />
-              <circle cx="13" cy="5" r="3" fill="#fff" stroke="#3157b7" strokeWidth="1.8" />
-              <text x="32" y="9" fontSize="10" fill="#3157b7" fontWeight="700">Rate %</text>
-            </>
-          )}
-        </g>
-      </g>
-    </svg>
-  );
-}
-
-function resolveDashboardSelection(action) {
-  if (action === 'view-my-posts') {
-    return { dashboardView: 'home', postFeedView: 'mine' };
-  }
-
-  if (action === 'view-overview') {
-    return { dashboardView: 'overview', postFeedView: 'all' };
-  }
-
-  return { dashboardView: 'home', postFeedView: 'all' };
-}
-
-function readStoredDashboardSelection() {
-  try {
-    const parsedValue = JSON.parse(localStorage.getItem('hr_dashboard_sidebar_view_state') || '{}');
-    return {
-      dashboardView: parsedValue?.dashboardView === 'overview' ? 'overview' : 'home',
-      postFeedView: parsedValue?.postFeedView === 'mine' ? 'mine' : 'all',
-    };
-  } catch (error) {
-    return {
-      dashboardView: 'home',
-      postFeedView: 'all',
-    };
-  }
-}
-
-function getPostId(post) {
-  return String(post?.postId || post?.id || '');
-}
-
-function normalizePostRecord(post) {
-  const likes = post?.likes && typeof post.likes === 'object' ? post.likes : {};
-  const postId = getPostId(post);
-  const parsedLikeCount = Number(post?.likeCount);
-
-  return {
-    ...(post || {}),
-    postId,
-    id: postId,
-    adminId: String(post?.adminId || post?.hrId || post?.userId || ''),
-    hrId: String(post?.hrId || post?.adminId || ''),
-    userId: String(post?.userId || ''),
-    adminName: post?.adminName || post?.name || 'HR Office',
-    adminProfile: post?.adminProfile || post?.profileImage || '/default-profile.png',
-    postUrl: post?.postUrl || '',
-    postPreviewUrl: post?.postPreviewUrl || '',
-    mediaType: String(post?.mediaType || ''),
-    message: post?.message || '',
-    targetRole: (post?.targetRole || 'all').toString().toLowerCase(),
-    likes,
-    likeCount: Number.isFinite(parsedLikeCount) ? parsedLikeCount : Object.keys(likes).length,
-    time: post?.time || post?.createdAt || '',
-  };
-}
-
-function getPostFeedImageUrl(post = {}) {
-  return String(post?.postPreviewUrl || post?.postUrl || '');
-}
-
-function getPostFullMediaUrl(post = {}) {
-  return String(post?.postUrl || post?.postPreviewUrl || '');
-}
-
-function normalizePostsApiPayload(payload) {
-  const items = Array.isArray(payload)
-    ? payload
-    : Array.isArray(payload?.posts)
-      ? payload.posts
-      : [];
-
-  const nextCursor = payload?.nextCursor && typeof payload.nextCursor === 'object'
-    ? {
-        beforeTime: String(payload.nextCursor.beforeTime || ''),
-        beforePostId: String(payload.nextCursor.beforePostId || ''),
-      }
-    : null;
-
-  return {
-    items: items.map((item) => normalizePostRecord(item)),
-    hasMore: Boolean(payload?.hasMore),
-    nextCursor: nextCursor && nextCursor.beforeTime ? nextCursor : null,
-  };
-}
-
-function isVideoPostUrl(url = '') {
-  return /^data:video\//i.test(url) || /\.(mp4|webm|ogg|mov)(\?|#|$)/i.test(url);
-}
-
-const ETHIOPIAN_WEEK_DAYS = ['እሑ', 'ሰኞ', 'ማክ', 'ረቡ', 'ሐሙ', 'ዓር', 'ቅዳ'];
-
-function getCalendarEventKind(eventItem = {}) {
-  const haystack = `${eventItem?.category || ''} ${eventItem?.title || ''} ${eventItem?.notes || ''}`.toLowerCase();
-  if (/(no class|holiday|break|vacation|closure|closed|off day|public holiday)/.test(haystack)) {
-    return 'no-class';
-  }
-  return 'academic';
-}
-
-function getCalendarEventTone(eventKind = 'academic') {
-  if (eventKind === 'no-class') {
-    return {
-      border: '1px solid var(--warning-border, #fdba74)',
-      background: 'var(--warning-soft, #fff7ed)',
-      color: 'var(--warning, #d97706)',
-      dot: 'var(--warning, #d97706)',
-      label: 'No Class',
-    };
-  }
-
-  return {
-    border: '1px solid var(--success-border, #a5f3fc)',
-    background: 'var(--success-soft, #ecfeff)',
-    color: 'var(--success, #0f766e)',
-    dot: 'var(--success, #0f766e)',
-    label: 'Academic',
-  };
-}
-
-function isGregorianLeapYear(year) {
-  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-}
-
-function toIsoDateString(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function getRecurringHolidayEvents(year) {
-  const orthodoxEaster = getOrthodoxEasterDate(year);
-  const orthodoxGoodFriday = new Date(orthodoxEaster);
-  orthodoxGoodFriday.setDate(orthodoxGoodFriday.getDate() - 2);
-  const ethiopianNewYearDay = isGregorianLeapYear(year + 1) ? 12 : 11;
-
-  return [
-    { slug: 'gregorian-new-year', title: 'New Year', date: new Date(year, 0, 1), notes: 'Gregorian New Year public holiday' },
-    { slug: 'ethiopian-christmas', title: 'Christmas (Genna)', date: new Date(year, 0, 7), notes: 'Ethiopian Christmas public holiday' },
-    { slug: 'timkat', title: 'Timkat', date: new Date(year, 0, 19), notes: 'Epiphany public holiday' },
-    { slug: 'adwa-victory', title: 'Adwa Victory Day', date: new Date(year, 2, 2), notes: 'Public holiday commemorating the Battle of Adwa' },
-    { slug: 'good-friday', title: 'Siklet (Good Friday)', date: orthodoxGoodFriday, notes: 'Orthodox Good Friday holiday' },
-    { slug: 'easter', title: 'Fasika (Easter)', date: orthodoxEaster, notes: 'Orthodox Easter holiday' },
-    { slug: 'labour-day', title: 'Labour Day', date: new Date(year, 4, 1), notes: 'International Workers Day public holiday' },
-    { slug: 'patriots-day', title: 'Patriots Victory Day', date: new Date(year, 4, 5), notes: 'Patriots Victory Day public holiday' },
-    { slug: 'derg-downfall', title: 'Downfall of the Derg', date: new Date(year, 4, 28), notes: 'National public holiday' },
-    { slug: 'ethiopian-new-year', title: 'Enkutatash (Ethiopian New Year)', date: new Date(year, 8, ethiopianNewYearDay), notes: 'Ethiopian New Year public holiday' },
-    { slug: 'meskel', title: 'Meskel', date: new Date(year, 8, 27), notes: 'Finding of the True Cross public holiday' },
-  ].map((eventItem) => ({
-    id: `builtin-holiday-${year}-${eventItem.slug}`,
-    title: eventItem.title,
-    category: 'Holiday',
-    notes: eventItem.notes,
-    gregorianDate: toIsoDateString(eventItem.date),
-    showInUpcomingDeadlines: false,
-    source: 'builtin-holiday',
-  }));
-}
-
-function mergeCalendarCollections(primaryEvents = [], secondaryEvents = []) {
-  const seenKeys = new Set();
-  const merged = [];
-
-  [...primaryEvents, ...secondaryEvents].forEach((eventItem, index) => {
-    const isoDate = String(eventItem?.gregorianDate || '').trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
-      return;
-    }
-
-    const titleKey = String(eventItem?.title || eventItem?.category || `event-${index}`).trim().toLowerCase();
-    const dedupeKey = `${isoDate}::${titleKey}`;
-    if (seenKeys.has(dedupeKey)) {
-      return;
-    }
-
-    seenKeys.add(dedupeKey);
-    merged.push({
-      ...(eventItem || {}),
-      id: String(eventItem?.id || dedupeKey),
-      gregorianDate: isoDate,
-    });
-  });
-
-  return merged.sort((leftEvent, rightEvent) => {
-    const dateCompare = String(leftEvent.gregorianDate || '').localeCompare(String(rightEvent.gregorianDate || ''));
-    if (dateCompare !== 0) return dateCompare;
-    return String(leftEvent.title || '').localeCompare(String(rightEvent.title || ''));
-  });
-}
-
-const CHAT_DEFAULT_PROFILE = '/default-profile.png';
-
-function getDashboardRoleLabel(value = '') {
-  const role = String(value || '').trim().toLowerCase();
-  if (role === 'teacher' || role === 'teachers') return 'Teacher';
-  if (role === 'finance') return 'Finance';
-  if (['school_admins', 'school_admin', 'management', 'admin', 'admins'].includes(role)) return 'School Admins';
-  if (role === 'hr') return 'HR';
-  return 'Staff';
-}
-
-function formatActivityTime(value) {
-  const stamp = Number(value || 0);
-  if (!stamp) return '';
-  const date = new Date(stamp);
-  if (Number.isNaN(date.getTime())) return '';
-  const now = new Date();
-  if (date.toDateString() === now.toDateString()) {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  }
-  return date.toLocaleDateString([], { day: 'numeric', month: 'short' });
-}
-
-function normalizeAttendanceSummaryEntry(entry = {}) {
-  const presentCount = Math.max(0, Number(entry?.presentCount) || 0);
-  const lateCount = Math.max(0, Number(entry?.lateCount) || 0);
-  const rawAbsentCount = Math.max(0, Number(entry?.absentCount) || 0);
-  const rawTotal = Math.max(0, Number(entry?.total) || 0);
-  const total = Math.max(rawTotal, presentCount + lateCount + rawAbsentCount);
-  const absentCount = total > 0
-    ? Math.max(0, total - (presentCount + lateCount))
-    : rawAbsentCount;
-  const rawRate = Number(entry?.rate);
-  const rate = Number.isFinite(rawRate)
-    ? Math.max(0, Math.min(100, Math.round(rawRate)))
-    : total > 0
-      ? Math.round(((presentCount + lateCount) / total) * 100)
-      : 0;
-
-  return {
-    total,
-    presentCount,
-    lateCount,
-    absentCount,
-    rate,
-  };
-}
+import {
+  CALENDAR_MANAGER_ROLES,
+  CHAT_DEFAULT_PROFILE,
+  DASHBOARD_ATTENDANCE_CACHE_KEY,
+  DASHBOARD_CALENDAR_CACHE_KEY,
+  DASHBOARD_CHAT_ACTIVITY_CACHE_KEY,
+  DASHBOARD_EMPLOYEES_CACHE_KEY,
+  DASHBOARD_POSTS_CACHE_KEY,
+  DEFAULT_PROFILE_IMAGE,
+  ETHIOPIAN_MONTHS,
+  POST_IMAGE_MAX_BYTES,
+  POST_IMAGE_MAX_DIMENSION,
+  POST_IMAGE_PREVIEW_MAX_BYTES,
+  POST_IMAGE_PREVIEW_MAX_DIMENSION,
+  POST_PAGE_SIZE,
+  QUALIFICATION_GRAPH_CONFIG,
+} from '../utils/dashboardConstants';
+import { deleteCachedDashboardResource, getCachedDashboardResource, setCachedDashboardResource } from '../utils/dashboardCache';
+import {
+  formatActivityTime,
+  formatFeedTimestamp,
+  getConversationSortTime,
+  getDashboardRoleLabel,
+  normalizeAttendanceSummaryEntry,
+  normalizeDashboardCollection,
+  normalizeEducationQualification,
+  readStoredDashboardSelection,
+  resolveDashboardSelection,
+} from '../utils/dashboardHelpers';
+import {
+  getPostFeedImageUrl,
+  getPostFullMediaUrl,
+  getPostId,
+  getResolvedLikeCount,
+  getSafeProfileImage,
+  isLikelyVideoMedia,
+  isPostLikedByActor,
+  isVideoPostUrl,
+  normalizePostLikes,
+  normalizePostRecord,
+  normalizePostsApiPayload,
+} from '../utils/dashboardPosts';
+import {
+  CALENDAR_WEEK_DAYS,
+  buildDefaultCalendarEvents,
+  formatCalendarDeadlineDate,
+  getCalendarEventKey,
+  getCalendarEventKind,
+  getCalendarEventMeta,
+  getCalendarEventTone,
+  mergeCalendarCollections,
+  normalizeCalendarEvent,
+  sortCalendarEvents,
+  toIsoDateString,
+} from '../utils/ethiopianCalendar';
+import useHrSession from '../hooks/auth/useHrSession';
+import useDashboardPosts from '../hooks/dashboard/useDashboardPosts';
+import useDashboardPostComposer from '../hooks/dashboard/useDashboardPostComposer';
+import Avatar from '../components/dashboard/charts/Avatar';
+import GrowthTrendChart from '../components/dashboard/charts/GrowthTrendChart';
+import AttendanceTrendChart from '../components/dashboard/charts/AttendanceTrendChart';
+import { DonutChart, GenderBar, PositionChart } from '../components/dashboard/charts/SimpleCharts';
 
 export default function Dashboard() {
   const [employees, setEmployees] = useState([]);
@@ -1178,54 +80,49 @@ export default function Dashboard() {
   const [attendancePeopleDetailByDate, setAttendancePeopleDetailByDate] = useState({});
   const [attendancePeopleLoading, setAttendancePeopleLoading] = useState(false);
   const [conversations, setConversations] = useState([]);
-  const [posts, setPosts] = useState([]);
-  const [postsCursor, setPostsCursor] = useState(null);
-  const [hasMorePosts, setHasMorePosts] = useState(false);
-  const [loadingMorePosts, setLoadingMorePosts] = useState(false);
   const [calendarEvents, setCalendarEvents] = useState([]);
-  const [postText, setPostText] = useState('');
-  const [postMedia, setPostMedia] = useState(null);
-  const [postMediaPreviewFile, setPostMediaPreviewFile] = useState(null);
-  const [postMediaMeta, setPostMediaMeta] = useState(null);
-  const [isOptimizingMedia, setIsOptimizingMedia] = useState(false);
-  const [isPostSubmitting, setIsPostSubmitting] = useState(false);
-  const [targetRole, setTargetRole] = useState('all');
-  const [targetOptions] = useState(['all', 'teacher', 'school_admins', 'finance', 'hr']);
-  const [showCreatePostModal, setShowCreatePostModal] = useState(false);
-  const [editingPostId, setEditingPostId] = useState('');
-  const [existingPostMediaUrl, setExistingPostMediaUrl] = useState('');
-  const [existingPostPreviewUrl, setExistingPostPreviewUrl] = useState('');
-  const [existingPostMediaType, setExistingPostMediaType] = useState('');
-  const [expandedPostImage, setExpandedPostImage] = useState(null);
-  const [showDeletePostModal, setShowDeletePostModal] = useState(false);
-  const [pendingDeletePost, setPendingDeletePost] = useState(null);
-  const [isDeletingPost, setIsDeletingPost] = useState(false);
-  const [pendingLikePostIds, setPendingLikePostIds] = useState({});
-  const [expandedPostDescriptions, setExpandedPostDescriptions] = useState({});
-  const [admin, setAdmin] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("admin")) || {};
-    } catch (e) {
-      return {};
-    }
+  const { admin, setAdmin, hrUserId, schoolCode: activeSchoolCode, schoolNodePrefix, withSchoolPath } = useHrSession();
+  const postOwnerId = admin?.adminId || admin?.hrId || admin?.id || admin?.userId || 'hr-admin';
+  const currentLikeActorId = admin?.userId || admin?.id || admin?.adminId || admin?.hrId || 'hr-admin';
+  const fileInputRef = useRef(null);
+  const {
+    posts,
+    setPosts,
+    postsCursor,
+    setPostsCursor,
+    hasMorePosts,
+    setHasMorePosts,
+    loadingMorePosts,
+    pendingLikePostIds,
+    expandedPostDescriptions,
+    cachePostsFeed,
+    upsertPostInState,
+    loadMorePosts,
+    handleLikePost,
+    togglePostDescription,
+  } = useDashboardPosts({ currentLikeActorId, postOwnerId });
+  const {
+    postText, setPostText,
+    postMedia, postMediaPreviewFile, postMediaMeta,
+    isOptimizingMedia, isPostSubmitting,
+    targetRole, setTargetRole, targetOptions,
+    showCreatePostModal, editingPostId,
+    existingPostMediaUrl, existingPostPreviewUrl, existingPostMediaType,
+    showDeletePostModal, pendingDeletePost, isDeletingPost,
+    expandedPostImage,
+    canSubmitPost, isPostComposerEditing, isPostOwnedByCurrentUser,
+    openCreatePostModal, closePostComposerModal, handleStartEditPost,
+    handleCloseDeletePostModal, handleRequestDeletePost,
+    openExpandedPostImage, closeExpandedPostImage,
+    handlePostMediaSelection, handleOpenPostMediaPicker,
+    handleSubmitCreatePost, handleConfirmDeletePost,
+  } = useDashboardPostComposer({
+    admin, postOwnerId, currentLikeActorId, fileInputRef,
+    upsertPostInState, setPosts, cachePostsFeed, postsCursor, hasMorePosts,
   });
   const db = useMemo(() => getDatabase(app), []);
   const navigate = useNavigate();
   const location = useLocation();
-  const hrUserId = String(admin?.userId || admin?.id || admin?.uid || admin?.user_id || admin?.hrId || '').trim();
-  const [resolvedSchoolCode, setResolvedSchoolCode] = useState(() => {
-    const directSchoolCode = String(admin?.schoolCode || '').trim();
-    if (directSchoolCode) return directSchoolCode;
-
-    try {
-      return String(JSON.parse(localStorage.getItem('gojo_admin') || '{}')?.schoolCode || '').trim();
-    } catch (error) {
-      return '';
-    }
-  });
-  const activeSchoolCode = String(resolvedSchoolCode || admin?.schoolCode || '').trim();
-  const schoolNodePrefix = activeSchoolCode ? `Platform1/Schools/${activeSchoolCode}` : '';
-  const withSchoolPath = (path) => (schoolNodePrefix ? `${schoolNodePrefix}/${path}` : path);
   const initialSidebarAction = location.state?.dashboardAction;
   const initialOpenNotifications = Boolean(location.state?.openNotifications);
   const initialDashboardSelection = initialSidebarAction
@@ -1268,11 +165,9 @@ export default function Dashboard() {
   const [calendarActionMessage, setCalendarActionMessage] = useState('');
   const [showCalendarEventModal, setShowCalendarEventModal] = useState(false);
   const [calendarModalContext, setCalendarModalContext] = useState('calendar');
-  const fileInputRef = useRef(null);
-  const CALENDAR_WEEK_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const adminChatUserId = String(admin?.userId || admin?.id || '').trim();
   const dashboardChatUserId = adminChatUserId || hrUserId;
-  const schoolPath = (path) => `Platform1/Schools/${activeSchoolCode}/${String(path || '').replace(/^\/+/, '')}`;
+  const schoolPath = withSchoolPath;
   const roleCandidates = [
     admin?.role,
     admin?.userType,
@@ -1286,142 +181,6 @@ export default function Dashboard() {
   const canManageCalendar = roleCandidates.some((value) => CALENDAR_MANAGER_ROLES.has(value))
     || Boolean(admin?.userId || admin?.id || admin?.hrId || admin?.adminId);
   const calendarCacheKey = `${DASHBOARD_CALENDAR_CACHE_KEY}:${activeSchoolCode || 'global'}`;
-
-  const CALENDAR_EVENT_META = {
-    academic: {
-      label: 'Academic',
-      color: 'var(--accent)',
-      background: 'var(--accent-soft)',
-      border: 'rgba(0, 122, 251, 0.18)',
-    },
-    'no-class': {
-      label: 'No class',
-      color: 'var(--warning)',
-      background: 'var(--warning-soft)',
-      border: 'var(--warning-border)',
-    },
-  };
-
-  const getCalendarEventKey = (category) => {
-    if (category === 'academic') return 'academic';
-    return 'no-class';
-  };
-
-  const getCalendarEventMeta = (category) => {
-    if (category === 'academic') return CALENDAR_EVENT_META.academic;
-    return CALENDAR_EVENT_META['no-class'];
-  };
-
-  const normalizeCalendarEvent = (eventId, eventValue) => {
-    const legacyType = eventValue?.type || 'academic';
-    const category = eventValue?.category || (legacyType === 'academic' ? 'academic' : 'no-class');
-
-    return {
-      id: eventId,
-      title: eventValue?.title || getCalendarEventMeta(category).label,
-      type: getCalendarEventKey(category),
-      category,
-      subType: eventValue?.subType || 'general',
-      notes: eventValue?.notes || '',
-      gregorianDate: eventValue?.gregorianDate || '',
-      ethiopianDate: eventValue?.ethiopianDate || null,
-      createdAt: eventValue?.createdAt || '',
-      createdBy: eventValue?.createdBy || '',
-      showInUpcomingDeadlines: Boolean(eventValue?.showInUpcomingDeadlines),
-      isDefault: false,
-    };
-  };
-
-  const sortCalendarEvents = (events) => [...events].sort((leftEvent, rightEvent) => {
-    const dateComparison = String(leftEvent.gregorianDate || '').localeCompare(String(rightEvent.gregorianDate || ''));
-    if (dateComparison !== 0) return dateComparison;
-    return String(leftEvent.createdAt || '').localeCompare(String(rightEvent.createdAt || ''));
-  });
-
-  const formatCalendarDeadlineDate = (isoDate) => {
-    if (!isoDate) return '';
-
-    const parsedDate = new Date(`${isoDate}T00:00:00`);
-    if (Number.isNaN(parsedDate.getTime())) return '';
-
-    return parsedDate.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-    });
-  };
-
-  const resetPostComposerState = () => {
-    setEditingPostId('');
-    setPostText('');
-    setPostMedia(null);
-    setPostMediaPreviewFile(null);
-    setPostMediaMeta(null);
-    setExistingPostMediaUrl('');
-    setExistingPostPreviewUrl('');
-    setExistingPostMediaType('');
-    setTargetRole('all');
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  const openCreatePostModal = () => {
-    resetPostComposerState();
-    setShowCreatePostModal(true);
-  };
-
-  const closePostComposerModal = () => {
-    if (isPostSubmitting) return;
-    setShowCreatePostModal(false);
-    resetPostComposerState();
-  };
-
-  const handleStartEditPost = (post) => {
-    if (!post) return;
-
-    const nextTargetRole = String(post.targetRole || 'all').trim().toLowerCase();
-    setEditingPostId(String(post.postId || ''));
-    setPostText(String(post.message || ''));
-    setPostMedia(null);
-    setPostMediaPreviewFile(null);
-    setPostMediaMeta(null);
-    setExistingPostMediaUrl(String(post.postUrl || ''));
-    setExistingPostPreviewUrl(String(post.postPreviewUrl || post.postUrl || ''));
-    setExistingPostMediaType(String(post.mediaType || ''));
-    setTargetRole(targetOptions.includes(nextTargetRole) ? nextTargetRole : 'all');
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-    setShowCreatePostModal(true);
-  };
-
-  const handleCloseDeletePostModal = () => {
-    if (isDeletingPost) return;
-    setPendingDeletePost(null);
-    setShowDeletePostModal(false);
-  };
-
-  const handleRequestDeletePost = (post) => {
-    if (!post || !isPostOwnedByCurrentUser(post)) return;
-    setPendingDeletePost(post);
-    setShowDeletePostModal(true);
-  };
-
-  const openExpandedPostImage = (post) => {
-    const fullImageUrl = getPostFullMediaUrl(post);
-    if (!fullImageUrl || isLikelyVideoMedia(post?.mediaType, fullImageUrl)) {
-      return;
-    }
-
-    setExpandedPostImage({
-      src: fullImageUrl,
-      alt: `${post?.adminName || 'HR Office'} post image`,
-    });
-  };
-
-  const closeExpandedPostImage = () => {
-    setExpandedPostImage(null);
-  };
 
   const loadCalendarEvents = useCallback(async ({ forceRefresh = false } = {}) => {
     if (!activeSchoolCode) {
@@ -1450,6 +209,16 @@ export default function Dashboard() {
       const normalizedEvents = forceRefresh
         ? await fetchCalendarEvents()
         : await getCachedDashboardResource(calendarCacheKey, fetchCalendarEvents, 5 * 60 * 1000);
+
+      setCalendarEvents(normalizedEvents);
+
+      const todayIsoDate = toIsoDateString(new Date());
+      setUpcomingCalendarEvents(
+        normalizedEvents.filter((eventItem) => {
+          if (!eventItem?.showInUpcomingDeadlines) return false;
+          return String(eventItem.gregorianDate || '') >= todayIsoDate;
+        }),
+      );
 
       if (forceRefresh) {
         setCachedDashboardResource(calendarCacheKey, normalizedEvents);
@@ -1517,37 +286,6 @@ export default function Dashboard() {
         console.error(error);
         if (!cancelled) {
           setAttendanceSummaryByDate({});
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    getCachedDashboardResource(DASHBOARD_POSTS_CACHE_KEY, async () => {
-      const response = await api.get('/api/get_posts', {
-        params: { limit: POST_PAGE_SIZE, withMeta: 1 },
-      });
-      return response.data;
-    }, 30 * 1000)
-      .then((payload) => {
-        const { items, hasMore, nextCursor } = normalizePostsApiPayload(payload);
-        if (!cancelled) {
-          setPosts(items);
-          setHasMorePosts(hasMore);
-          setPostsCursor(nextCursor);
-        }
-      })
-      .catch((error) => {
-        console.error('Failed to load posts:', error);
-        if (!cancelled) {
-          setPosts([]);
-          setHasMorePosts(false);
-          setPostsCursor(null);
         }
       });
 
@@ -2671,246 +1409,10 @@ export default function Dashboard() {
     }
     return `${Math.max(1, Math.round(numericBytes / 1024))} KB`;
   };
-  const compressImageToJpeg = async (
-    file,
-    {
-      maxDimension = POST_IMAGE_MAX_DIMENSION,
-      maxBytes = POST_IMAGE_MAX_BYTES,
-      nameSuffix = '',
-    } = {},
-  ) => {
-    if (!file || !String(file.type || '').startsWith('image/') || file.type === 'image/svg+xml') {
-      return {
-        file,
-        originalSize: Number(file?.size || 0),
-        finalSize: Number(file?.size || 0),
-        wasCompressed: false,
-        wasConvertedToJpeg: false,
-      };
-    }
-
-    const imageUrl = URL.createObjectURL(file);
-
-    try {
-      const imageElement = await new Promise((resolve, reject) => {
-        const image = new Image();
-        image.onload = () => resolve(image);
-        image.onerror = () => reject(new Error('Unable to process selected image.'));
-        image.src = imageUrl;
-      });
-
-      const originalWidth = imageElement.naturalWidth || imageElement.width;
-      const originalHeight = imageElement.naturalHeight || imageElement.height;
-      const scale = Math.min(1, maxDimension / Math.max(originalWidth, originalHeight));
-      let targetWidth = Math.max(1, Math.round(originalWidth * scale));
-      let targetHeight = Math.max(1, Math.round(originalHeight * scale));
-      const canvas = document.createElement('canvas');
-      const context = canvas.getContext('2d', { alpha: false });
-
-      if (!context) {
-        return {
-          file,
-          originalSize: Number(file.size || 0),
-          finalSize: Number(file.size || 0),
-          wasCompressed: false,
-          wasConvertedToJpeg: false,
-        };
-      }
-
-      const renderImage = () => {
-        canvas.width = targetWidth;
-        canvas.height = targetHeight;
-        context.fillStyle = '#ffffff';
-        context.fillRect(0, 0, targetWidth, targetHeight);
-        context.drawImage(imageElement, 0, 0, targetWidth, targetHeight);
-      };
-
-      const canvasToBlob = (quality) => new Promise((resolve, reject) => {
-        canvas.toBlob((blob) => {
-          if (blob) {
-            resolve(blob);
-            return;
-          }
-
-          reject(new Error('Unable to optimize selected image.'));
-        }, 'image/jpeg', quality);
-      });
-
-      renderImage();
-
-      const qualitySteps = [0.78, 0.68, 0.58, 0.48, 0.4];
-      const resizeSteps = [1, 0.88, 0.76];
-      let bestBlob = null;
-
-      for (const resizeFactor of resizeSteps) {
-        targetWidth = Math.max(1, Math.round(originalWidth * scale * resizeFactor));
-        targetHeight = Math.max(1, Math.round(originalHeight * scale * resizeFactor));
-        renderImage();
-
-        for (const quality of qualitySteps) {
-          const candidateBlob = await canvasToBlob(quality);
-          bestBlob = candidateBlob;
-          if (candidateBlob.size <= maxBytes) {
-            break;
-          }
-        }
-
-        if (bestBlob && bestBlob.size <= maxBytes) {
-          break;
-        }
-      }
-
-      if (!bestBlob || bestBlob.size >= file.size) {
-        return {
-          file,
-          originalSize: Number(file.size || 0),
-          finalSize: Number(file.size || 0),
-          wasCompressed: false,
-          wasConvertedToJpeg: false,
-        };
-      }
-
-      const baseFileName = file.name.replace(/\.[^.]+$/, '') || 'post-image';
-      const jpegFile = new File(
-        [bestBlob],
-        `${baseFileName}${nameSuffix ? `-${nameSuffix}` : ''}.jpg`,
-        { type: 'image/jpeg', lastModified: Date.now() },
-      );
-
-      return {
-        file: jpegFile,
-        originalSize: Number(file.size || 0),
-        finalSize: Number(jpegFile.size || 0),
-        wasCompressed: jpegFile.size < file.size,
-        wasConvertedToJpeg: file.type !== 'image/jpeg',
-      };
-    } finally {
-      URL.revokeObjectURL(imageUrl);
-    }
-  };
-  const handlePostMediaSelection = async (event) => {
-    const file = event.target.files && event.target.files[0];
-
-    if (!file) {
-      setPostMedia(null);
-      setPostMediaPreviewFile(null);
-      setPostMediaMeta(null);
-      return;
-    }
-
-    setIsOptimizingMedia(true);
-
-    try {
-      const optimizedResult = await compressImageToJpeg(file, { nameSuffix: 'full' });
-      const isImageMedia = String(file.type || '').startsWith('image/') && file.type !== 'image/svg+xml';
-      const previewResult = isImageMedia
-        ? await compressImageToJpeg(file, {
-            maxDimension: POST_IMAGE_PREVIEW_MAX_DIMENSION,
-            maxBytes: POST_IMAGE_PREVIEW_MAX_BYTES,
-            nameSuffix: 'preview',
-          })
-        : null;
-
-      setPostMedia(optimizedResult.file);
-      setPostMediaPreviewFile(previewResult?.file || null);
-      setPostMediaMeta({
-        originalSize: optimizedResult.originalSize,
-        finalSize: optimizedResult.finalSize,
-        wasCompressed: optimizedResult.wasCompressed,
-        wasConvertedToJpeg: optimizedResult.wasConvertedToJpeg,
-        previewFinalSize: Number(previewResult?.finalSize || 0),
-        hasPreviewVariant: Boolean(previewResult?.file),
-      });
-    } catch (error) {
-      console.error('Failed to optimize media:', error);
-      setPostMedia(file);
-      setPostMediaPreviewFile(null);
-      setPostMediaMeta({
-        originalSize: Number(file.size || 0),
-        finalSize: Number(file.size || 0),
-        wasCompressed: false,
-        wasConvertedToJpeg: false,
-        previewFinalSize: 0,
-        hasPreviewVariant: false,
-      });
-    } finally {
-      setIsOptimizingMedia(false);
-    }
-  };
-  const handleOpenPostMediaPicker = () => {
-    if (isOptimizingMedia) return;
-    fileInputRef.current?.click();
-  };
-  const canSubmitPost = Boolean(postText.trim() || postMedia || existingPostMediaUrl) && !isOptimizingMedia;
-  const postOwnerId = admin?.adminId || admin?.hrId || admin?.id || admin?.userId || 'hr-admin';
-  const currentLikeActorId = admin?.userId || admin?.id || admin?.adminId || admin?.hrId || 'hr-admin';
-  const isPostComposerEditing = Boolean(editingPostId);
   const handleSidebarViewSelection = (action) => {
     const nextSelection = resolveDashboardSelection(action);
     setDashboardView(nextSelection.dashboardView);
     setPostFeedView(nextSelection.postFeedView);
-  };
-
-  const cachePostsFeed = (items, nextCursor, hasMore) => {
-    setCachedDashboardResource(DASHBOARD_POSTS_CACHE_KEY, {
-      posts: items,
-      nextCursor,
-      hasMore,
-    });
-  };
-
-  const upsertPostInState = (incomingPost) => {
-    if (!incomingPost?.postId) {
-      return;
-    }
-
-    setPosts((currentPosts) => {
-      const alreadyExists = currentPosts.some((post) => post.postId === incomingPost.postId);
-      const retainedCount = Math.max(currentPosts.length, POST_PAGE_SIZE);
-      const mergedPosts = alreadyExists
-        ? currentPosts.map((post) => (post.postId === incomingPost.postId ? { ...post, ...incomingPost } : post))
-        : [incomingPost, ...currentPosts];
-      const nextPosts = mergedPosts.slice(0, retainedCount);
-
-      cachePostsFeed(nextPosts, postsCursor, hasMorePosts);
-      return nextPosts;
-    });
-  };
-
-  const loadMorePosts = async () => {
-    if (loadingMorePosts || !hasMorePosts || !postsCursor?.beforeTime) {
-      return;
-    }
-
-    setLoadingMorePosts(true);
-
-    try {
-      const response = await api.get('/api/get_posts', {
-        params: {
-          limit: POST_PAGE_SIZE,
-          withMeta: 1,
-          beforeTime: postsCursor.beforeTime,
-          beforePostId: postsCursor.beforePostId,
-        },
-      });
-
-      const { items, hasMore, nextCursor } = normalizePostsApiPayload(response.data);
-
-      setPosts((currentPosts) => {
-        const existingIds = new Set(currentPosts.map((post) => String(post.postId || '')));
-        const appendedPosts = items.filter((post) => !existingIds.has(String(post.postId || '')));
-        const nextPosts = [...currentPosts, ...appendedPosts];
-        cachePostsFeed(nextPosts, nextCursor, hasMore);
-        return nextPosts;
-      });
-
-      setHasMorePosts(hasMore);
-      setPostsCursor(nextCursor);
-    } catch (error) {
-      console.error('Failed to load older posts:', error);
-    } finally {
-      setLoadingMorePosts(false);
-    }
   };
 
   const handleOpenConversation = async (conversation) => {
@@ -2979,12 +1481,6 @@ export default function Dashboard() {
     }));
     window.dispatchEvent(new Event('hr-dashboard-view-updated'));
   }, [dashboardView, postFeedView]);
-  const isPostOwnedByCurrentUser = (post) => {
-    if (!post) return false;
-    const ownerCandidates = [post.adminId, post.userId, post.hrId, post.ownerId].filter(Boolean).map((value) => String(value));
-    const actorCandidates = [postOwnerId, currentLikeActorId, admin?.adminId, admin?.hrId, admin?.id, admin?.userId].filter(Boolean).map((value) => String(value));
-    return ownerCandidates.some((ownerValue) => actorCandidates.includes(ownerValue));
-  };
   const visiblePosts = postFeedView === 'mine' ? posts.filter((post) => isPostOwnedByCurrentUser(post)) : posts;
 
   const shouldShowPostSeeMore = (message = '') => {
@@ -2992,139 +1488,6 @@ export default function Dashboard() {
     return message.length > 180 || message.split(/\r?\n/).length > 3;
   };
 
-  const togglePostDescription = (postId) => {
-    setExpandedPostDescriptions((currentValue) => ({
-      ...currentValue,
-      [postId]: !currentValue[postId],
-    }));
-  };
-
-  const readPostMediaFile = (file) => new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = (event) => resolve(event?.target?.result || '');
-    reader.onerror = () => resolve('');
-    reader.readAsDataURL(file);
-  });
-
-  const handlePost = async () => {
-    if (!canSubmitPost || isPostSubmitting) return null;
-
-    if (!postOwnerId) {
-      alert('Session expired');
-      return null;
-    }
-
-    setIsPostSubmitting(true);
-
-    try {
-      const payload = new FormData();
-      payload.append('message', postText);
-      payload.append('adminId', postOwnerId);
-      payload.append('userId', admin?.userId || admin?.id || postOwnerId);
-      payload.append('adminName', admin?.name || 'HR Office');
-      payload.append('adminProfile', getSafeProfileImage(admin?.profileImage));
-      payload.append('targetRole', targetRole || 'all');
-
-      if (postMedia) {
-        payload.append('media', postMedia);
-        if (postMediaPreviewFile) {
-          payload.append('mediaPreview', postMediaPreviewFile);
-        }
-      }
-
-      if (editingPostId) {
-        payload.append('removeMedia', !postMedia && !existingPostMediaUrl ? '1' : '0');
-
-        if (existingPostMediaUrl && !postMedia) {
-          payload.append('postUrl', existingPostMediaUrl);
-          payload.append('postPreviewUrl', existingPostPreviewUrl || existingPostMediaUrl);
-          payload.append('mediaType', existingPostMediaType || '');
-        }
-
-        const response = await api.patch(`/api/update_post/${editingPostId}`, payload);
-        const updatedPost = response?.data?.post;
-
-        if (updatedPost) {
-          upsertPostInState(updatedPost);
-        }
-
-        return updatedPost;
-      }
-
-      const response = isPostComposerEditing
-        ? await api.put(`/api/update_post/${editingPostId}`, payload)
-        : await api.post('/api/create_post', payload);
-      const savedPost = response?.data?.post ? normalizePostRecord(response.data.post) : null;
-
-      if (savedPost) {
-        upsertPostInState(savedPost);
-      }
-
-      return savedPost;
-    } catch (error) {
-      console.error(`Failed to ${isPostComposerEditing ? 'update' : 'create'} post:`, error?.response?.data || error);
-      throw error;
-    } finally {
-      setIsPostSubmitting(false);
-    }
-  };
-
-  const handleSubmitCreatePost = async () => {
-    if (!canSubmitPost || isPostSubmitting) return;
-    try {
-      await handlePost();
-      setShowCreatePostModal(false);
-      resetPostComposerState();
-    } catch (error) {
-      console.error('Post save failed:', error?.response?.data || error);
-      alert(error?.response?.data?.message || 'Unable to save post. Please try again.');
-    }
-  };
-
-  const handleDeletePost = async (postId) => {
-    try {
-      await api.delete(`/api/delete_post/${postId}`, {
-        params: {
-          adminId: postOwnerId,
-          userId: currentLikeActorId,
-        },
-      });
-      setPosts((currentPosts) => {
-        const nextPosts = currentPosts.filter((post) => post.postId !== postId);
-        cachePostsFeed(nextPosts, postsCursor, hasMorePosts);
-        return nextPosts;
-      });
-
-      if (editingPostId === postId) {
-        setShowCreatePostModal(false);
-        resetPostComposerState();
-      }
-
-      return true;
-    } catch (error) {
-      console.error('Failed to delete post:', error);
-      alert('Unable to delete post. Please try again.');
-      return false;
-    }
-  };
-
-  const handleConfirmDeletePost = async () => {
-    const postId = String(pendingDeletePost?.postId || '').trim();
-    if (!postId || isDeletingPost) {
-      return;
-    }
-
-    setIsDeletingPost(true);
-    try {
-      const wasDeleted = await handleDeletePost(postId);
-      if (wasDeleted) {
-        setPendingDeletePost(null);
-        setShowDeletePostModal(false);
-      }
-    } finally {
-      setIsDeletingPost(false);
-    }
-  };
 
   const handleCreateCalendarEvent = async () => {
     if (!canManageCalendar) {
@@ -3176,7 +1539,7 @@ export default function Dashboard() {
       setEditingCalendarEventId('');
       setShowCalendarEventModal(false);
       setCalendarModalContext('calendar');
-      DASHBOARD_RESOURCE_CACHE.delete(calendarCacheKey);
+      deleteCachedDashboardResource(calendarCacheKey);
       await loadCalendarEvents({ forceRefresh: true });
     } catch (error) {
       console.error('Failed to save calendar event:', error?.response?.data || error);
@@ -3249,7 +1612,7 @@ export default function Dashboard() {
       }
 
       setCalendarActionMessage('Calendar event deleted successfully.');
-      DASHBOARD_RESOURCE_CACHE.delete(calendarCacheKey);
+      deleteCachedDashboardResource(calendarCacheKey);
       await loadCalendarEvents({ forceRefresh: true });
     } catch (error) {
       console.error('Failed to delete calendar event:', error?.response?.data || error);
@@ -3299,99 +1662,6 @@ export default function Dashboard() {
 
     return () => window.clearTimeout(timeoutId);
   }, [calendarActionMessage]);
-
-  const handleLikePost = async (postId) => {
-    const normalizedPostId = String(postId || '').trim();
-    if (!normalizedPostId || !currentLikeActorId || pendingLikePostIds[normalizedPostId]) {
-      return;
-    }
-
-    const currentPost = posts.find((post) => String(post?.postId || '') === normalizedPostId);
-    if (!currentPost) {
-      return;
-    }
-
-    const previousLikes = normalizePostLikes(currentPost.likes);
-    const wasLiked = Boolean(previousLikes[String(currentLikeActorId)]);
-    const nextLikes = { ...previousLikes };
-
-    if (wasLiked) {
-      delete nextLikes[String(currentLikeActorId)];
-    } else {
-      nextLikes[String(currentLikeActorId)] = true;
-    }
-
-    const optimisticLikeCount = Object.keys(nextLikes).length;
-
-    setPendingLikePostIds((currentValue) => ({
-      ...currentValue,
-      [normalizedPostId]: true,
-    }));
-
-    setPosts((currentPosts) => {
-      const nextPosts = currentPosts.map((post) => (
-        post.postId === normalizedPostId
-          ? {
-              ...post,
-              likeCount: optimisticLikeCount,
-              likes: nextLikes,
-            }
-          : post
-      ));
-
-      setCachedDashboardResource(DASHBOARD_POSTS_CACHE_KEY, nextPosts);
-      return nextPosts;
-    });
-
-    try {
-      const response = await api.post('/api/like_post', {
-        postId: normalizedPostId,
-        userId: currentLikeActorId,
-        adminId: postOwnerId,
-      });
-
-      const updatedPost = response?.data?.post ? normalizePostRecord(response.data.post) : null;
-      const likeCount = response?.data?.likeCount;
-      const likes = normalizePostLikes(response?.data?.likes);
-
-      setPosts((currentPosts) => {
-        const nextPosts = currentPosts.map((post) =>
-          post.postId === normalizedPostId
-            ? {
-                ...post,
-                likeCount: typeof likeCount === 'number' ? likeCount : Object.keys(likes).length,
-                likes,
-              }
-            : post,
-        );
-        setCachedDashboardResource(DASHBOARD_POSTS_CACHE_KEY, nextPosts);
-        return nextPosts;
-      });
-    } catch (error) {
-      console.error('Failed to like post:', error);
-      setPosts((currentPosts) => {
-        const nextPosts = currentPosts.map((post) => (
-          post.postId === normalizedPostId
-            ? {
-                ...post,
-                likeCount: Math.max(0, Object.keys(previousLikes).length),
-                likes: previousLikes,
-              }
-            : post
-        ));
-
-        setCachedDashboardResource(DASHBOARD_POSTS_CACHE_KEY, nextPosts);
-        return nextPosts;
-      });
-      alert('Unable to update like. Please try again.');
-    } finally {
-      setPendingLikePostIds((currentValue) => {
-        const nextValue = { ...currentValue };
-        delete nextValue[normalizedPostId];
-        return nextValue;
-      });
-    }
-  };
 
   const handleAttendanceStatusCardClick = (statusValue) => {
     if (showAttendancePeopleList && attendanceStatusFilter === statusValue) {

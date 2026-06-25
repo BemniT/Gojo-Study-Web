@@ -30,7 +30,7 @@ const SIDEBAR_SECTIONS = [
     icon: FaUserGraduate,
     links: [
       { label: "Academic Year", path: "/academic-years" },
-      { label: "Grade Management", path: "/grede-management" },
+      { label: "Grade Management", path: "/grade-management" },
       { label: "Promotion System", path: "/promotion-system" },
     ],
   },
