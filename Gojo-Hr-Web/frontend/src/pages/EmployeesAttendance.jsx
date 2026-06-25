@@ -1,457 +1,72 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { FaBell, FaCalendarAlt, FaCheckCircle, FaClock, FaCog, FaFacebookMessenger, FaFilter, FaSearch, FaTimesCircle, FaUserCheck, FaUsers } from 'react-icons/fa';
-import api from '../api';
+import { FaBell, FaCalendarAlt, FaCheckCircle, FaClock, FaCog, FaFacebookMessenger, FaTimesCircle, FaUsers } from 'react-icons/fa';
 import './Dashboard.css';
 import '../styles/global.css';
-import { getEmployeeJob, getEmployeeName, getEmployeeProfileImage, getEmployeesSnapshot } from '../hrData';
+import AvatarBadge from '../components/AvatarBadge';
+import MetricCard from '../components/employees/MetricCard';
+import AttendanceFiltersBar from '../components/employees/AttendanceFiltersBar';
+import AttendanceTable from '../components/employees/AttendanceTable';
+import AttendanceStickyFooter from '../components/employees/AttendanceStickyFooter';
+import useHrSession from '../hooks/auth/useHrSession';
+import useAttendance from '../hooks/employees/useAttendance';
 
-const ATTENDANCE_AUTOSAVE_STORAGE_KEY = 'gojo-hr-attendance-autosave-enabled';
-const ATTENDANCE_EMPLOYEES_CACHE_TTL_MS = 5 * 60 * 1000;
+const headerActionStyle = {
+  position: 'relative',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 8,
+  height: 38,
+  minWidth: 38,
+  padding: '0 14px',
+  borderRadius: 999,
+  border: '1px solid var(--border-soft, #dbe2f2)',
+  background: 'var(--surface-panel, #fff)',
+  color: 'var(--text-secondary, #334155)',
+  fontSize: 13,
+  fontWeight: 700,
+  cursor: 'pointer',
+  textDecoration: 'none',
+  boxShadow: 'none',
+};
 
-function toIsoDate(dateObj) {
-  const year = dateObj.getFullYear();
-  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-  const day = String(dateObj.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function getInitials(name) {
-  return (name || 'Employee')
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part.charAt(0).toUpperCase())
-    .join('') || 'E';
-}
-
-function createAttendanceSignature(date, attendanceMap) {
-  const entries = Object.entries(attendanceMap || {})
-    .map(([employeeId, record]) => {
-      const entry = record && typeof record === 'object' ? record : {};
-      const rawStatus = (entry.status || '').toString().toLowerCase();
-      const status = rawStatus === 'late' ? 'late' : rawStatus === 'present' ? 'present' : rawStatus === 'absent' ? 'absent' : '';
-      const present = typeof entry.present === 'boolean' ? entry.present : status !== 'absent';
-
-      return [String(employeeId), { status, present }];
-    })
-    .sort(([leftId], [rightId]) => leftId.localeCompare(rightId));
-
-  return JSON.stringify({ date: String(date || ''), attendance: entries });
-}
-
-function AvatarBadge({ src, name, size = 48 }) {
-  const [failed, setFailed] = useState(false);
-
-  if (!src || failed) {
-    return (
-      <div
-        style={{
-          width: size,
-          height: size,
-          borderRadius: 16,
-          border: '1px solid var(--border-soft)',
-          background: 'linear-gradient(135deg, var(--surface-accent) 0%, var(--surface-muted) 100%)',
-          color: 'var(--accent-strong)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontSize: 15,
-          fontWeight: 800,
-          flexShrink: 0,
-        }}
-      >
-        {getInitials(name)}
-      </div>
-    );
-  }
-
-  return (
-    <img
-      src={src}
-      alt={name || 'Employee'}
-      onError={() => setFailed(true)}
-      style={{ width: size, height: size, borderRadius: 16, objectFit: 'cover', border: '1px solid var(--border-soft)', flexShrink: 0 }}
-    />
-  );
-}
-
-function MetricCard({ icon: Icon, label, value, accent }) {
-  return (
-    <div
-      style={{
-        background: 'var(--surface-panel)',
-        borderRadius: 18,
-        border: '1px solid var(--border-soft)',
-        padding: 18,
-        boxShadow: 'var(--shadow-panel)',
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
-          <div style={{ marginTop: 10, fontSize: 28, fontWeight: 800, color: 'var(--text-primary)' }}>{value}</div>
-        </div>
-        <div
-          style={{
-            width: 46,
-            height: 46,
-            borderRadius: 16,
-            background: accent.background,
-            border: `1px solid ${accent.border}`,
-            color: accent.color,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: 18,
-          }}
-        >
-          <Icon />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function StatusActionButton({ label, value, active, colors, onClick }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onClick(value)}
-      style={{
-        minHeight: 34,
-        padding: '0 12px',
-        borderRadius: 999,
-        border: `1px solid ${active ? colors.border : 'var(--border-soft)'}`,
-        background: active ? colors.background : 'var(--surface-panel)',
-        color: active ? colors.color : 'var(--text-secondary)',
-        fontSize: 12,
-        fontWeight: 800,
-        cursor: 'pointer',
-        transition: 'all 0.18s ease',
-        boxShadow: active ? 'var(--shadow-soft)' : 'none',
-      }}
-    >
-      {label}
-    </button>
-  );
-}
+const METRIC_ACCENTS = {
+  active:  { background: '#f3f8ff', border: '#dbe8f7', color: '#2563eb' },
+  present: { background: '#f5fbf7', border: '#d9efe1', color: '#059669' },
+  late:    { background: '#fffbeb', border: '#fde68a', color: '#d97706' },
+  absent:  { background: '#fff7f7', border: '#fecaca', color: '#dc2626' },
+};
 
 export default function EmployeesAttendance() {
   const navigate = useNavigate();
-  const [admin] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('admin') || '{}');
-    } catch {
-      return {};
-    }
-  });
+  const { admin, getAdminIdPayload } = useHrSession();
+  const idPayload = getAdminIdPayload();
+  const markedBy = idPayload.adminId || idPayload.hrId || idPayload.userId || '';
 
-  const [selectedDate, setSelectedDate] = useState(() => toIsoDate(new Date()));
-  const [employees, setEmployees] = useState([]);
-  const [selectedPosition, setSelectedPosition] = useState('');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [hoveredEmployeeId, setHoveredEmployeeId] = useState(null);
-  const [attendance, setAttendance] = useState({});
-  const [isLoading, setIsLoading] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [isAutoSaving, setIsAutoSaving] = useState(false);
-  const [errorMessage, setErrorMessage] = useState('');
-  const [successMessage, setSuccessMessage] = useState('');
-  const [autoSaveEnabled, setAutoSaveEnabled] = useState(() => {
-    try {
-      const stored = localStorage.getItem(ATTENDANCE_AUTOSAVE_STORAGE_KEY);
-      return stored == null ? true : stored === 'true';
-    } catch {
-      return true;
-    }
-  });
-  const [autoSaveState, setAutoSaveState] = useState('idle');
-
-  const userEditedAttendanceRef = useRef(false);
-  const lastSavedSignatureRef = useRef('');
-
-  const markedBy = admin?.adminId || admin?.hrId || admin?.id || admin?.userId || '';
-  const isBusy = isLoading || isSaving || isAutoSaving;
-
-  const positions = useMemo(() => {
-    const set = new Set();
-    (employees || []).forEach((emp) => {
-      const job = getEmployeeJob(emp);
-      const pos = job.position || emp.position || emp.role || 'Staff';
-      if (pos) set.add(pos);
-    });
-    return Array.from(set).sort();
-  }, [employees]);
-
-  const normalizedEmployees = useMemo(() => {
-    const list = (employees || [])
-      .filter((employee) => {
-        // Exclude terminated employees from attendance marking
-        const status = (employee.status || employee?.job?.status || employee?.profileData?.job?.status || '').toString().toLowerCase();
-        const isActive = typeof employee.isActive === 'boolean' ? employee.isActive : true;
-        return status !== 'terminated' && isActive !== false;
-      })
-      .map((employee) => {
-        const job = getEmployeeJob(employee);
-        const name = getEmployeeName(employee);
-        const avatar = getEmployeeProfileImage(employee);
-        return {
-          ...employee,
-          _name: name,
-          _avatar: avatar,
-          _initials: getInitials(name),
-          _department: job.department || employee.department || 'Unassigned',
-          _position: job.position || employee.position || employee.role || 'Staff',
-        };
-      });
-
-    let filtered = selectedPosition ? list.filter((e) => e._position === selectedPosition) : list;
-    if (searchTerm && searchTerm.trim()) {
-      const q = searchTerm.trim().toLowerCase();
-      filtered = filtered.filter((e) => (e._name || '').toLowerCase().includes(q) || (e.id || '').toLowerCase().includes(q));
-    }
-    return filtered.sort((a, b) => a._name.localeCompare(b._name));
-  }, [employees, selectedPosition, searchTerm]);
-
-  const attendanceStats = useMemo(() => {
-    return normalizedEmployees.reduce(
-      (stats, employee) => {
-        const employeeId = employee.id;
-        stats.total += 1;
-
-        if (!Object.prototype.hasOwnProperty.call(attendance || {}, employeeId)) {
-          stats.unset += 1;
-          return stats;
-        }
-
-        const record = attendance?.[employeeId] || {};
-        const rawStatus = (record.status || (record.present ? 'present' : 'absent')).toString().toLowerCase();
-        const status = rawStatus === 'late' ? 'late' : rawStatus === 'present' ? 'present' : rawStatus === 'absent' ? 'absent' : '';
-
-        if (status === 'present') {
-          stats.present += 1;
-        } else if (status === 'late') {
-          stats.late += 1;
-        } else if (status === 'absent') {
-          stats.absent += 1;
-        } else {
-          stats.unset += 1;
-        }
-
-        return stats;
-      },
-      { total: 0, present: 0, late: 0, absent: 0, unset: 0 },
-    );
-  }, [attendance, normalizedEmployees]);
-
-  useEffect(() => {
-    async function loadEmployees() {
-      try {
-        const snapshot = await getEmployeesSnapshot(ATTENDANCE_EMPLOYEES_CACHE_TTL_MS);
-        setEmployees(snapshot);
-      } catch (e) {
-        console.error(e);
-        setEmployees([]);
-      }
-    }
-
-    loadEmployees();
-  }, []);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(ATTENDANCE_AUTOSAVE_STORAGE_KEY, autoSaveEnabled ? 'true' : 'false');
-    } catch {
-      // Ignore storage persistence errors and keep the in-memory toggle working.
-    }
-
-    if (!autoSaveEnabled) {
-      setAutoSaveState('idle');
-    }
-  }, [autoSaveEnabled]);
-
-  useEffect(() => {
-    userEditedAttendanceRef.current = false;
-    setAutoSaveState('idle');
-  }, [selectedDate]);
-
-  useEffect(() => {
-    async function loadAttendance() {
-      setIsLoading(true);
-      setErrorMessage('');
-      setSuccessMessage('');
-      try {
-        const res = await api.get('/api/employee_attendance', {
-          params: { date: selectedDate },
-        });
-        const map = res.data?.attendance || {};
-        const normalized = typeof map === 'object' && map ? map : {};
-        // normalize legacy records to always include status
-        const withStatus = Object.entries(normalized).reduce((acc, [employeeId, record]) => {
-          const entry = record && typeof record === 'object' ? record : {};
-          const rawStatus = (entry.status || '').toString().toLowerCase();
-          const status = rawStatus === 'late' ? 'late' : rawStatus === 'present' ? 'present' : 'absent';
-          const present = typeof entry.present === 'boolean' ? entry.present : status !== 'absent';
-          acc[employeeId] = {
-            ...entry,
-            status,
-            present,
-          };
-          return acc;
-        }, {});
-        setAttendance(withStatus);
-        lastSavedSignatureRef.current = createAttendanceSignature(selectedDate, withStatus);
-        userEditedAttendanceRef.current = false;
-        setAutoSaveState('idle');
-      } catch (e) {
-        console.error(e);
-        setAttendance({});
-        lastSavedSignatureRef.current = createAttendanceSignature(selectedDate, {});
-        userEditedAttendanceRef.current = false;
-        setAutoSaveState('idle');
-        setErrorMessage('Failed to load attendance for the selected date.');
-      } finally {
-        setIsLoading(false);
-      }
-    }
-
-    if (selectedDate) loadAttendance();
-  }, [selectedDate]);
-
-  const handleSetStatus = (employeeId, status) => {
-    const normalizedStatus = (status || '').toString().toLowerCase();
-    const finalStatus = normalizedStatus === 'late' ? 'late' : normalizedStatus === 'present' ? 'present' : 'absent';
-    const present = finalStatus !== 'absent';
-    userEditedAttendanceRef.current = true;
-    setErrorMessage('');
-    setSuccessMessage('');
-    if (autoSaveEnabled) {
-      setAutoSaveState('pending');
-    }
-    setAttendance((prev) => {
-      const next = { ...(prev || {}) };
-      next[employeeId] = {
-        ...(next[employeeId] || {}),
-        present,
-        status: finalStatus,
-      };
-      return next;
-    });
-  };
-
-  const statusStyles = (status) => {
-    if (!status) return { bg: 'var(--surface-panel)', border: 'var(--border-soft)', text: 'var(--text-muted)' };
-    if (status === 'present') return { bg: '#f0fdf4', border: '#bbf7d0', text: '#166534' };
-    if (status === 'late') return { bg: '#fffbeb', border: '#fde68a', text: '#92400e' };
-    return { bg: '#fef2f2', border: '#fecaca', text: '#991b1b' };
-  };
-
-<<<<<<< HEAD
-  const handleSave = useCallback(async ({ silent = false } = {}) => {
-=======
-  const presentColors = { background: '#f0fdf4', border: '#bbf7d0', color: '#166534' };
-  const lateColors = { background: '#fffbeb', border: '#fde68a', color: '#92400e' };
-  const absentColors = { background: '#fef2f2', border: '#fecaca', color: '#991b1b' };
-
-  const handleSave = useCallback(async ({ silent = false } = {}) => {
-    const nextSignature = createAttendanceSignature(selectedDate, attendance);
-
->>>>>>> 766d34b2b7502d6b1d32154621a888e9f4979040
-    if (silent) {
-      setIsAutoSaving(true);
-      setAutoSaveState('saving');
-    } else {
-      setIsSaving(true);
-    }
-
-    setErrorMessage('');
-    setSuccessMessage('');
-
-    try {
-      const nextSignature = createAttendanceSignature(selectedDate, attendance);
-      const payload = {
-        date: selectedDate,
-        markedBy,
-        attendance,
-      };
-      const res = await api.post('/api/employee_attendance', payload);
-      const savedCount = res.data?.savedCount;
-      lastSavedSignatureRef.current = nextSignature;
-      userEditedAttendanceRef.current = false;
-      setAutoSaveState('saved');
-
-      if (!silent) {
-        setSuccessMessage(typeof savedCount === 'number' ? `Saved ${savedCount} records.` : 'Saved attendance.');
-      }
-      return true;
-    } catch (e) {
-      console.error(e);
-      setAutoSaveState('error');
-      setErrorMessage(silent ? 'Auto-save failed. Use Save Attendance.' : 'Failed to save attendance.');
-      return false;
-    } finally {
-      if (silent) {
-        setIsAutoSaving(false);
-      } else {
-        setIsSaving(false);
-      }
-    }
-  }, [attendance, markedBy, selectedDate]);
-
-  useEffect(() => {
-    if (!autoSaveEnabled || !selectedDate || isLoading || isSaving || isAutoSaving) {
-      return undefined;
-    }
-
-    if (!userEditedAttendanceRef.current) {
-      return undefined;
-    }
-
-    const nextSignature = createAttendanceSignature(selectedDate, attendance);
-    if (nextSignature === lastSavedSignatureRef.current) {
-      userEditedAttendanceRef.current = false;
-      setAutoSaveState('saved');
-      return undefined;
-    }
-
-    setAutoSaveState('pending');
-    const timeoutId = window.setTimeout(() => {
-      handleSave({ silent: true }).catch(console.error);
-    }, 900);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [attendance, autoSaveEnabled, handleSave, isAutoSaving, isLoading, isSaving, selectedDate]);
-
-  const autoSaveLabel = autoSaveEnabled
-    ? autoSaveState === 'saving'
-      ? 'Auto-saving changes...'
-      : autoSaveState === 'saved'
-        ? 'Changes save automatically'
-        : autoSaveState === 'error'
-          ? 'Auto-save needs attention'
-          : 'Changes will save automatically'
-    : 'Manual save only';
-
-  const headerActionStyle = {
-    position: 'relative',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    height: 38,
-    minWidth: 38,
-    padding: '0 14px',
-    borderRadius: 999,
-    border: '1px solid var(--border-soft, #dbe2f2)',
-    background: 'var(--surface-panel, #fff)',
-    color: 'var(--text-secondary, #334155)',
-    fontSize: 13,
-    fontWeight: 700,
-    cursor: 'pointer',
-    textDecoration: 'none',
-    boxShadow: 'none',
-  };
+  const {
+    normalizedEmployees,
+    positions,
+    selectedDate,
+    setSelectedDate,
+    selectedPosition,
+    setSelectedPosition,
+    searchTerm,
+    setSearchTerm,
+    clearFilters,
+    attendance,
+    attendanceStats,
+    handleSetStatus,
+    isLoading,
+    isBusy,
+    errorMessage,
+    successMessage,
+    autoSaveEnabled,
+    setAutoSaveEnabled,
+    autoSaveState,
+    autoSaveLabel,
+    handleSave,
+  } = useAttendance({ markedBy });
 
   return (
     <div
@@ -473,7 +88,7 @@ export default function EmployeesAttendance() {
           <button type="button" title="Notifications" style={headerActionStyle}><FaBell /></button>
           <button type="button" title="Messages" onClick={() => navigate('/all-chat')} style={headerActionStyle}><FaFacebookMessenger /></button>
           <Link to="/settings" aria-label="Settings" style={headerActionStyle}><FaCog /></Link>
-          <AvatarBadge src={admin.profileImage} name={admin.name || 'HR Office'} size={40} />
+          <AvatarBadge src={admin.profileImage} name={admin.name || 'HR Office'} size={40} radius={16} fontSize={15} />
         </div>
       </nav>
 
@@ -482,15 +97,7 @@ export default function EmployeesAttendance() {
 
         <main className="google-main" style={{ flex: '1 1 0', minWidth: 0, maxWidth: 'none', margin: 0, boxSizing: 'border-box', alignSelf: 'flex-start', height: 'calc(100vh - var(--topbar-height) - 36px)', maxHeight: 'calc(100vh - var(--topbar-height) - 36px)', overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch', position: 'relative', padding: '0 12px 12px 2px', display: 'flex', justifyContent: 'center', width: '100%' }}>
           <div style={{ width: '100%', maxWidth: 1320 }}>
-            <section
-              style={{
-                background: 'linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)',
-                border: '1px solid var(--border-soft)',
-                borderRadius: 22,
-                padding: '22px 24px',
-                boxShadow: 'var(--shadow-panel)',
-              }}
-            >
+            <section style={{ background: 'linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-muted) 100%)', border: '1px solid var(--border-soft)', borderRadius: 22, padding: '22px 24px', boxShadow: 'var(--shadow-panel)' }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', height: 30, padding: '0 12px', borderRadius: 999, background: 'var(--surface-accent)', border: '1px solid var(--border-strong)', color: 'var(--accent-strong)', fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
@@ -508,127 +115,28 @@ export default function EmployeesAttendance() {
             </section>
 
             <section style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
-              <MetricCard icon={FaUsers} label="Active Employees" value={attendanceStats.total} accent={{ background: '#f3f8ff', border: '#dbe8f7', color: '#2563eb' }} />
-              <MetricCard icon={FaCheckCircle} label="Present" value={attendanceStats.present} accent={{ background: '#f5fbf7', border: '#d9efe1', color: '#059669' }} />
-              <MetricCard icon={FaClock} label="Late" value={attendanceStats.late} accent={{ background: '#fffbeb', border: '#fde68a', color: '#d97706' }} />
-              <MetricCard icon={FaTimesCircle} label="Absent / Unset" value={attendanceStats.absent + attendanceStats.unset} accent={{ background: '#fff7f7', border: '#fecaca', color: '#dc2626' }} />
+              <MetricCard icon={FaUsers}        label="Active Employees" value={attendanceStats.total}                                accent={METRIC_ACCENTS.active} />
+              <MetricCard icon={FaCheckCircle}  label="Present"          value={attendanceStats.present}                              accent={METRIC_ACCENTS.present} />
+              <MetricCard icon={FaClock}        label="Late"             value={attendanceStats.late}                                 accent={METRIC_ACCENTS.late} />
+              <MetricCard icon={FaTimesCircle}  label="Absent / Unset"   value={attendanceStats.absent + attendanceStats.unset}       accent={METRIC_ACCENTS.absent} />
             </section>
 
-            <section style={{ marginTop: 16, background: 'var(--surface-panel)', borderRadius: 22, border: '1px solid var(--border-soft)', padding: 18, boxShadow: 'var(--shadow-panel)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', flex: '1 1 720px' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <label style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Date</label>
-                    <input
-                      type="date"
-                      value={selectedDate}
-                      onChange={(e) => setSelectedDate(e.target.value)}
-                      style={{ height: 42, borderRadius: 14, border: '1px solid var(--input-border)', padding: '0 14px', fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', background: 'var(--input-bg)' }}
-                    />
-                  </div>
-
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 220 }}>
-                    <label style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Position</label>
-                    <div style={{ position: 'relative' }}>
-                      <FaFilter style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: 13 }} />
-                      <select
-                        value={selectedPosition}
-                        onChange={(e) => setSelectedPosition(e.target.value)}
-                        style={{ width: '100%', height: 42, borderRadius: 14, border: '1px solid var(--input-border)', padding: '0 14px 0 40px', fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', background: 'var(--input-bg)', cursor: 'pointer' }}
-                      >
-                        <option value="">All positions</option>
-                        {positions.length ? positions.map((p) => (
-                          <option key={p} value={p}>{p}</option>
-                        )) : <option disabled>No positions</option>}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 280, flex: '1 1 280px' }}>
-                    <label style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Search</label>
-                    <div style={{ position: 'relative' }}>
-                      <FaSearch style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: 13 }} />
-                      <input
-                        placeholder="Search by name or employee ID"
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                        style={{ width: '100%', height: 42, borderRadius: 14, border: '1px solid var(--input-border)', padding: '0 14px 0 40px', fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', background: 'var(--input-bg)' }}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5 }}>
-                    <button
-                      type="button"
-                      onClick={() => setAutoSaveEnabled((prev) => !prev)}
-                      aria-pressed={autoSaveEnabled}
-                      style={{
-                        height: 40,
-                        border: `1px solid ${autoSaveEnabled ? '#bfdbfe' : '#dbe4ef'}`,
-                        borderRadius: 999,
-                        padding: '0 14px',
-                        fontWeight: 800,
-                        cursor: 'pointer',
-                        background: autoSaveEnabled ? '#eff6ff' : '#fff',
-                        color: autoSaveEnabled ? '#007afb' : '#334155',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 10,
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: 34,
-                          height: 20,
-                          borderRadius: 999,
-                          background: autoSaveEnabled ? '#007afb' : '#cbd5e1',
-                          position: 'relative',
-                          transition: 'background 0.18s ease',
-                          flexShrink: 0,
-                        }}
-                      >
-                        <span
-                          style={{
-                            position: 'absolute',
-                            top: 2,
-                            left: autoSaveEnabled ? 16 : 2,
-                            width: 16,
-                            height: 16,
-                            borderRadius: '50%',
-                            background: '#ffffff',
-                            boxShadow: '0 2px 6px rgba(15, 23, 42, 0.18)',
-                            transition: 'left 0.18s ease',
-                          }}
-                        />
-                      </span>
-                      Auto-save
-                    </button>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: autoSaveState === 'error' ? '#b91c1c' : '#64748b' }}>
-                      {autoSaveLabel}
-                    </span>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => { setSelectedPosition(''); setSearchTerm(''); }}
-                    style={{ height: 40, border: '1px solid #dbe4ef', borderRadius: 12, padding: '0 14px', fontWeight: 800, cursor: 'pointer', background: '#fff', color: '#334155' }}
-                  >
-                    Clear
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleSave}
-                    disabled={isBusy}
-                    style={{ height: 40, border: '1px solid #007afb', borderRadius: 12, padding: '0 18px', fontWeight: 800, cursor: isBusy ? 'not-allowed' : 'pointer', background: '#007afb', color: '#fff', opacity: isBusy ? 0.7 : 1 }}
-                  >
-                    {isBusy ? 'Saving...' : 'Save Attendance'}
-                  </button>
-                </div>
-              </div>
-            </section>
+            <AttendanceFiltersBar
+              selectedDate={selectedDate}
+              setSelectedDate={setSelectedDate}
+              selectedPosition={selectedPosition}
+              setSelectedPosition={setSelectedPosition}
+              positions={positions}
+              searchTerm={searchTerm}
+              setSearchTerm={setSearchTerm}
+              autoSaveEnabled={autoSaveEnabled}
+              setAutoSaveEnabled={setAutoSaveEnabled}
+              autoSaveLabel={autoSaveLabel}
+              autoSaveState={autoSaveState}
+              onClear={clearFilters}
+              onSave={handleSave}
+              isBusy={isBusy}
+            />
 
             {errorMessage ? (
               <div style={{ marginTop: 14, padding: '12px 14px', borderRadius: 14, border: '1px solid #fecaca', background: '#fff1f2', color: '#b91c1c', fontSize: 13, fontWeight: 700 }}>
@@ -642,100 +150,18 @@ export default function EmployeesAttendance() {
               </div>
             ) : null}
 
-            <section style={{ marginTop: 16, background: 'var(--surface-panel)', borderRadius: 22, border: '1px solid var(--border-soft)', boxShadow: 'var(--shadow-panel)', overflow: 'hidden' }}>
-              <div style={{ padding: '18px 18px 12px', borderBottom: '1px solid var(--border-soft)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
-                <div>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-primary)' }}>Daily Attendance Sheet</div>
-                  <div style={{ marginTop: 6, fontSize: 13, color: 'var(--text-muted)' }}>Use the action pills for faster marking, then save once when the register is complete.</div>
-                </div>
-                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 34, padding: '0 14px', borderRadius: 999, border: '1px solid var(--border-soft)', background: 'var(--surface-panel)', color: 'var(--text-secondary)', fontSize: 12, fontWeight: 700 }}>
-                  <FaUserCheck /> {normalizedEmployees.length} visible employee{normalizedEmployees.length === 1 ? '' : 's'}
-                </div>
-              </div>
+            <AttendanceTable
+              employees={normalizedEmployees}
+              attendance={attendance}
+              isLoading={isLoading}
+              onSetStatus={handleSetStatus}
+            />
 
-              {isLoading ? (
-                <div style={{ padding: '28px 20px', fontSize: 14, color: 'var(--text-muted)', fontWeight: 600 }}>Loading attendance...</div>
-              ) : normalizedEmployees.length === 0 ? (
-                <div style={{ padding: '28px 20px', fontSize: 14, color: 'var(--text-muted)', fontWeight: 600 }}>No employees found for the current filters.</div>
-              ) : (
-                <div style={{ width: '100%', overflowX: 'auto' }}>
-                  <table style={{ width: '100%', minWidth: 1080, borderCollapse: 'collapse' }}>
-                    <thead>
-                      <tr style={{ background: 'var(--surface-muted)' }}>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Employee</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Department</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Position</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'left', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Current Status</th>
-                        <th style={{ padding: '14px 18px', textAlign: 'right', fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: '1px solid var(--border-soft)' }}>Mark Attendance</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {normalizedEmployees.map((employee) => {
-                        const employeeId = employee.id;
-                        const isHovered = hoveredEmployeeId === employeeId;
-                        const hasSavedOrSelectedStatus = Object.prototype.hasOwnProperty.call(attendance || {}, employeeId);
-                        const record = attendance?.[employeeId] || {};
-                        const rawStatus = hasSavedOrSelectedStatus
-                          ? (record.status || (record.present ? 'present' : 'absent')).toString().toLowerCase()
-                          : '';
-                        const displayStatus = rawStatus === 'late' ? 'late' : rawStatus === 'present' ? 'present' : rawStatus === 'absent' ? 'absent' : '';
-                        const styles = statusStyles(displayStatus);
-
-                        return (
-                          <tr
-                            key={employeeId}
-                            onMouseEnter={() => setHoveredEmployeeId(employeeId)}
-                            onMouseLeave={() => setHoveredEmployeeId(null)}
-                            style={{ background: isHovered ? 'var(--surface-muted)' : 'var(--surface-panel)', transition: 'background 0.18s ease' }}
-                          >
-                            <td style={{ padding: '16px 18px', borderBottom: '1px solid var(--border-soft)' }}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-                                <AvatarBadge src={employee._avatar} name={employee._name} size={50} />
-                                <div style={{ minWidth: 0 }}>
-                                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{employee._name}</div>
-                                  <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-muted)' }}>{employeeId}</div>
-                                </div>
-                              </div>
-                            </td>
-                            <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)', fontWeight: 700, borderBottom: '1px solid var(--border-soft)' }}>{employee._department}</td>
-                            <td style={{ padding: '16px 18px', fontSize: 13, color: 'var(--text-secondary)', fontWeight: 700, borderBottom: '1px solid var(--border-soft)' }}>{employee._position}</td>
-                            <td style={{ padding: '16px 18px', borderBottom: '1px solid var(--border-soft)' }}>
-                              <span style={{ display: 'inline-flex', alignItems: 'center', minHeight: 30, padding: '0 12px', borderRadius: 999, border: `1px solid ${styles.border}`, background: styles.bg, color: styles.text, fontSize: 12, fontWeight: 800, textTransform: displayStatus ? 'capitalize' : 'none' }}>
-                                {displayStatus || 'Not set'}
-                              </span>
-                            </td>
-                            <td style={{ padding: '16px 18px', textAlign: 'right', borderBottom: '1px solid var(--border-soft)' }}>
-                              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                                <StatusActionButton label="Present" value="present" active={displayStatus === 'present'} colors={presentColors} onClick={(value) => handleSetStatus(employeeId, value)} />
-                                <StatusActionButton label="Late" value="late" active={displayStatus === 'late'} colors={lateColors} onClick={(value) => handleSetStatus(employeeId, value)} />
-                                <StatusActionButton label="Absent" value="absent" active={displayStatus === 'absent'} colors={absentColors} onClick={(value) => handleSetStatus(employeeId, value)} />
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </section>
-
-            <section style={{ position: 'sticky', bottom: 18, marginTop: 16, background: 'var(--surface-overlay, rgba(8, 17, 31, 0.9))', backdropFilter: 'blur(10px)', border: '1px solid var(--border-soft)', borderRadius: 20, padding: '14px 18px', boxShadow: 'var(--shadow-panel)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text-primary)' }}>Attendance Ready to Save</div>
-                <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-muted)' }}>
-                  {attendanceStats.present} present, {attendanceStats.late} late, {attendanceStats.absent} absent, {attendanceStats.unset} not set.
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={handleSave}
-                disabled={isBusy}
-                style={{ height: 42, border: '1px solid #007afb', borderRadius: 12, padding: '0 18px', fontWeight: 800, cursor: isBusy ? 'not-allowed' : 'pointer', background: '#007afb', color: '#fff', opacity: isBusy ? 0.7 : 1 }}
-              >
-                {isBusy ? 'Saving...' : 'Save Attendance'}
-              </button>
-            </section>
+            <AttendanceStickyFooter
+              stats={attendanceStats}
+              isBusy={isBusy}
+              onSave={handleSave}
+            />
           </div>
         </main>
       </div>

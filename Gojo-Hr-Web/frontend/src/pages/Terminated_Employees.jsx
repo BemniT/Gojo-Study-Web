@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { FaBell, FaCog, FaFacebookMessenger, FaHistory, FaUndoAlt, FaUserSlash, FaUsers } from 'react-icons/fa';
 import './Dashboard.css';
 import '../styles/global.css';
+import AvatarBadge from '../components/AvatarBadge';
 import useHrSession from '../hooks/auth/useHrSession';
 import useTerminatedEmployees from '../hooks/employees/useTerminatedEmployees';
 
@@ -43,51 +44,12 @@ const tdStyle = {
   borderBottom: '1px solid var(--border-soft)',
 };
 
-const getInitials = (name) =>
-  (name || 'Employee')
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part.charAt(0).toUpperCase())
-    .join('') || 'E';
-
 const formatDate = (value) => {
   if (!value || value === '—') return '—';
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 };
-
-function AvatarBadge({ src, name, size = 48 }) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => { setFailed(false); }, [src]);
-
-  if (!src || failed) {
-    return (
-      <div
-        style={{
-          width: size, height: size, borderRadius: 16,
-          border: '1px solid var(--border-soft)',
-          background: 'linear-gradient(135deg, var(--surface-accent) 0%, var(--surface-muted) 100%)',
-          color: 'var(--accent-strong)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 15, fontWeight: 800, flexShrink: 0,
-        }}
-      >
-        {getInitials(name)}
-      </div>
-    );
-  }
-
-  return (
-    <img
-      src={src}
-      alt={name || 'Employee'}
-      onError={() => setFailed(true)}
-      style={{ width: size, height: size, borderRadius: 16, objectFit: 'cover', border: '1px solid var(--border-soft)', flexShrink: 0 }}
-    />
-  );
-}
 
 export default function TerminatedEmployees() {
   const navigate = useNavigate();
@@ -131,7 +93,7 @@ export default function TerminatedEmployees() {
           <button type="button" title="Notifications" style={headerActionStyle}><FaBell /></button>
           <button type="button" title="Messages" onClick={() => navigate('/all-chat')} style={headerActionStyle}><FaFacebookMessenger /></button>
           <Link to="/settings" aria-label="Settings" style={headerActionStyle}><FaCog /></Link>
-          <AvatarBadge src={admin.profileImage || ''} name={admin.name || 'HR Office'} size={40} />
+          <AvatarBadge src={admin.profileImage || ''} name={admin.name || 'HR Office'} size={40} radius={16} fontSize={15} />
         </div>
       </nav>
 
@@ -235,7 +197,7 @@ export default function TerminatedEmployees() {
                         <tr key={employee.terminationId || employee.id || employee._name}>
                           <td style={{ padding: '16px 18px', borderBottom: '1px solid var(--border-soft)' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                              <AvatarBadge src={employee._profileImage} name={employee._name} size={50} />
+                              <AvatarBadge src={employee._profileImage} name={employee._name} size={50} radius={16} fontSize={15} />
                               <div style={{ minWidth: 0 }}>
                                 <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>{employee._name}</div>
                                 <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-muted)' }}>{employee.employeeId || '—'} · {employee._position}</div>

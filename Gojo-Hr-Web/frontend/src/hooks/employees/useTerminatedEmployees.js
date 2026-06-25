@@ -1,14 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import api from '../../api';
 import { getEmployeesSnapshot, setEmployeesSnapshot } from '../../hrData';
-
-const isEmployeeTerminatedRecord = (value) => {
-  const raw = value || {};
-  const employment = raw.employment || raw.profileData?.employment || {};
-  const job = { ...(raw.job || raw.profileData?.job || {}), ...employment };
-  const statusText = String(job.status || raw.status || '').trim().toLowerCase();
-  return Boolean(raw.terminated) || Boolean(raw.termination?.terminatedAt) || statusText.includes('terminated');
-};
+import { isEmployeeTerminatedRecord } from '../../utils/employeeData';
 
 const normalizeTerminations = (data) => {
   const list = Array.isArray(data)
