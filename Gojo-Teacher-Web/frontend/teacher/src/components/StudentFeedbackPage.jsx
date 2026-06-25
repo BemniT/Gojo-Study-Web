@@ -13,6 +13,12 @@ import { getTeacherCourseContext } from "../api/teacherApi";
 import { fetchCachedJson } from "../utils/rtdbCache";
 import { loadUserRecordsByIds, resolveTeacherSchoolCode } from "../utils/teacherData";
 import { formatSemesterLabel, normalizeSemesterId } from "./lessonPlan/useLessonPlanData";
+import StudentFeedbackHeader from "./feedback/StudentFeedbackHeader";
+import StudentFeedbackToolbar from "./feedback/StudentFeedbackToolbar";
+import StudentFeedbackSummary from "./feedback/StudentFeedbackSummary";
+import StudentFeedbackInsights from "./feedback/StudentFeedbackInsights";
+import StudentFeedbackTableSection from "./feedback/StudentFeedbackTableSection";
+import styles from "./feedback/StudentFeedback.module.css";
 import "../styles/studentFeedbackPage.css";
 
 const UNDERSTANDING_META = {
@@ -1166,8 +1172,8 @@ function StudentFeedbackPage() {
   if (!teacher) return null;
 
   return (
-    <div className="dashboard-page student-feedback-page">
-      <div className="google-dashboard student-feedback-shell">
+    <div className={styles.page}>
+      <div className={styles.shell}>
         <Sidebar
           active="student-feedback"
           sidebarOpen={leftSidebarOpen}
@@ -1176,154 +1182,55 @@ function StudentFeedbackPage() {
           handleLogout={handleLogout}
         />
 
-        <div
-          className="teacher-sidebar-spacer"
-          style={{
-            width: "var(--sidebar-width, clamp(230px, 16vw, 290px))",
-            minWidth: "var(--sidebar-width, clamp(230px, 16vw, 290px))",
-            flex: "0 0 var(--sidebar-width, clamp(230px, 16vw, 290px))",
-            pointerEvents: "none",
-            background: "#ffffff",
-          }}
-        />
+          <div className={styles.sidebarSpacer} />
 
-        <main className="student-feedback-main">
-          <section className="sf-card sf-hero">
-            <div>
-              <span className="sf-kicker">Student Feedback</span>
-              <h1>Lesson feedback analytics</h1>
-              <p>
-                Read the class response quickly with clean visual graphs, lesson-level signals, and time-window controls. This view stays aggregate and does not show individual learners.
-              </p>
+          <main className={styles.main}>
+            <div className={styles.mainInner}>
+              <StudentFeedbackHeader
+                coursesCount={courses.length}
+                rangeSummaryLabel={rangeSummaryLabel}
+                lastUpdatedLabel={lastUpdatedLabel}
+              />
 
-              <div className="sf-hero-meta">
-                <span className="sf-hero-chip">{courses.length} assigned courses</span>
-                <span className="sf-hero-chip">{rangeSummaryLabel}</span>
-                <span className="sf-hero-chip">Last update {lastUpdatedLabel}</span>
-              </div>
-            </div>
+              <StudentFeedbackToolbar
+                courses={courses}
+                selectedCourseId={selectedCourseId}
+                setSelectedCourseId={setSelectedCourseId}
+                availableSemesters={availableSemesters}
+                selectedSemesterId={selectedSemesterId}
+                setSelectedSemesterId={setSelectedSemesterId}
+                rangeSummaryLabel={rangeSummaryLabel}
+                dateRangeOptions={DATE_RANGE_OPTIONS}
+                dateRange={dateRange}
+                setDateRange={setDateRange}
+                focusOptions={FOCUS_OPTIONS}
+                focusFilter={focusFilter}
+                setFocusFilter={setFocusFilter}
+                formatCourseLabel={formatCourseLabel}
+                formatSemesterLabel={formatSemesterLabel}
+              />
 
-            {/* <div className="sf-hero-pulse">
-              <div className="sf-pulse-icon">
-                <FaChartBar />
-              </div>
-              <div>
-                <strong>Teaching signal</strong>
-                <p>{feedbackHeadline}</p>
-              </div>
-            </div> */}
-          </section>
+              {loading ? <div className={styles.emptyState}>Loading student feedback...</div> : null}
+              {!loading && error ? <div className={styles.emptyState}>{error}</div> : null}
+              {!loading && !error && !entries.length ? (
+                <div className={styles.emptyState}>No student feedback was found for this teacher yet.</div>
+              ) : null}
+              {!loading && !error && entries.length && !filteredEntries.length ? (
+                <div className={styles.emptyState}>No feedback matches the current filters. Try another course, semester, range, or focus.</div>
+              ) : null}
 
-          <section className="sf-card sf-toolbar">
-            <div className="sf-toolbar-head">
-              <div className="sf-toolbar-title">
-                <FaFilter />
-                <span>Filter feedback</span>
-              </div>
-              <div className="sf-toolbar-note">{rangeSummaryLabel}</div>
-            </div>
+              {!loading && !error && filteredEntries.length ? (
+                <>
+                  <StudentFeedbackSummary
+                    totalResponses={totalResponses}
+                    averageRating={averageRating}
+                    ratedResponses={ratedResponses}
+                    supportShare={supportShare}
+                    supportEntries={supportEntries}
+                    activeLessons={activeLessons}
+                  />
 
-            <div className="sf-toolbar-controls">
-              <label>
-                Course
-                <select value={selectedCourseId} onChange={(event) => setSelectedCourseId(event.target.value)}>
-                  <option value="all">All assigned courses</option>
-                  {courses.map((course) => (
-                    <option key={course.id} value={course.id}>{formatCourseLabel(course)}</option>
-                  ))}
-                </select>
-              </label>
-
-              <label>
-                Semester
-                <select value={selectedSemesterId} onChange={(event) => setSelectedSemesterId(event.target.value)}>
-                  <option value="all">All semesters</option>
-                  {availableSemesters.map((semesterId) => (
-                    <option key={semesterId} value={semesterId}>{formatSemesterLabel(semesterId)}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            <div className="sf-toolbar-switches">
-              <div className="sf-switch-cluster">
-                <span className="sf-switch-label">Date range</span>
-                <div className="sf-focus-pills" role="tablist" aria-label="Analytics date range">
-                  {DATE_RANGE_OPTIONS.map((option) => (
-                    <button
-                      key={option.id}
-                      type="button"
-                      className={`sf-chip${dateRange === option.id ? " is-active" : ""}`}
-                      onClick={() => setDateRange(option.id)}
-                      aria-pressed={dateRange === option.id}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="sf-switch-cluster">
-                <span className="sf-switch-label">Focus</span>
-                <div className="sf-focus-pills" role="tablist" aria-label="Feedback focus filters">
-                  {FOCUS_OPTIONS.map((option) => (
-                    <button
-                      key={option.id}
-                      type="button"
-                      className={`sf-chip${focusFilter === option.id ? " is-active" : ""}`}
-                      onClick={() => setFocusFilter(option.id)}
-                      aria-pressed={focusFilter === option.id}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </section>
-
-          {loading ? <div className="sf-card sf-empty-state">Loading student feedback...</div> : null}
-          {!loading && error ? <div className="sf-card sf-empty-state">{error}</div> : null}
-          {!loading && !error && !entries.length ? (
-            <div className="sf-card sf-empty-state">
-              No student feedback was found for this teacher yet.
-            </div>
-          ) : null}
-          {!loading && !error && entries.length && !filteredEntries.length ? (
-            <div className="sf-card sf-empty-state">
-              No feedback matches the current filters. Try another course, semester, range, or focus.
-            </div>
-          ) : null}
-
-          {!loading && !error && filteredEntries.length ? (
-            <>
-              <section className="sf-summary-grid">
-                <article className="sf-card sf-metric-card">
-                  <span>Total responses</span>
-                  <strong>{totalResponses}</strong>
-                  <small>All feedback entries in the active view</small>
-                </article>
-
-                <article className="sf-card sf-metric-card">
-                  <span>Average rating</span>
-                  <strong>{averageRating.toFixed(1)}</strong>
-                  <small>{ratedResponses} rated responses</small>
-                </article>
-
-                <article className="sf-card sf-metric-card is-warning">
-                  <span>Support share</span>
-                  <strong>{supportShare}%</strong>
-                  <small>{supportEntries.length} responses need follow-up</small>
-                </article>
-
-                <article className="sf-card sf-metric-card">
-                  <span>Active lessons</span>
-                  <strong>{activeLessons}</strong>
-                  <small>Aggregated lesson summaries in this filter</small>
-                </article>
-              </section>
-
-              <section className="sf-visual-grid">
+                  <StudentFeedbackInsights>
                 <article className="sf-card sf-chart-card">
                   <div className="sf-card-header">
                     <div>
@@ -1482,7 +1389,7 @@ function StudentFeedbackPage() {
                 </article>
               </section>
 
-              <section className="sf-details-grid">
+                  <section className="sf-details-grid">
                 <article className="sf-card sf-chart-card">
                   <div className="sf-card-header">
                     <div>
@@ -1567,10 +1474,20 @@ function StudentFeedbackPage() {
                   )}
                 </article>
               </section>
+                  </StudentFeedbackInsights>
 
-              <section className="sf-card sf-table-card">
-                <div className="sf-card-header">
-                  <div>
+                  <StudentFeedbackTableSection
+                    lessonSummaryRows={lessonSummaryRows}
+                    formatSemesterLabel={formatSemesterLabel}
+                    formatDateLabel={formatDateLabel}
+                    formatDateTimeLabel={formatDateTimeLabel}
+                    formatGenderMix={formatGenderMix}
+                  />
+                </>
+              ) : null}
+            </div>
+          </main>
+        </div>
                     <h2>Recent lesson feedback</h2>
                     <span>Aggregated lesson summaries only</span>
                   </div>

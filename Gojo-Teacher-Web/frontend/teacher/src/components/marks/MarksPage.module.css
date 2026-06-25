@@ -1,0 +1,158 @@
+.pageRoot {
+  background: #ffffff;
+  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
+  color: var(--text-primary);
+  --surface-panel: #ffffff;
+  --surface-accent: #eff6ff;
+  --surface-muted: #f8fafc;
+  --surface-strong: #e2e8f0;
+  --page-bg: #ffffff;
+  --border-soft: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --text-primary: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
+  --accent: #2563eb;
+  --accent-soft: #dbeafe;
+  --accent-strong: #007afb;
+  --sidebar-width: clamp(230px, 16vw, 290px);
+  --shadow-soft: 0 10px 24px rgba(15, 23, 42, 0.08);
+  --shadow-panel: 0 14px 30px rgba(15, 23, 42, 0.1);
+}
+
+.dashboardShell {
+  display: flex;
+  gap: 0;
+  padding: 0;
+  height: calc(100vh - 73px);
+  overflow: hidden;
+}
+
+.sidebarSpacer {
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  flex: 0 0 var(--sidebar-width);
+  pointer-events: none;
+}
+
+.main {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  margin-left: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  text-align: left;
+  background: #ffffff;
+}
+
+.mainInner {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+}
+
+.headerCard {
+  margin-bottom: 16px;
+  background: #ffffff;
+  border: 1px solid #dbeafe;
+  box-shadow: 0 14px 30px rgba(37, 99, 235, 0.1);
+}
+
+.card {
+  background: var(--surface-panel);
+  border: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-soft);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+
+.noticeCard {
+  background: var(--surface-panel);
+  border: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-soft);
+  border-radius: 14px;
+  padding: 20px;
+  margin-bottom: 18px;
+}
+
+.noticeTitle {
+  margin: 0 0 10px;
+  color: var(--text-primary);
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.noticeText {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.tableWrap {
+  position: relative;
+  overflow-x: auto;
+  overflow-y: visible;
+  min-height: 120px;
+  width: 100%;
+  max-width: 100%;
+  padding-bottom: 32px;
+  white-space: normal;
+  background: var(--surface-panel);
+  border-radius: 16px;
+  border: 1px solid #dbeafe;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.1);
+  margin-bottom: 20px;
+  padding: 14px;
+}
+
+.tableWrapper {
+  position: relative;
+  overflow-x: auto;
+  overflow-y: visible;
+  min-height: 120px;
+  width: 100%;
+  max-width: 100%;
+  white-space: normal;
+  background: var(--surface-panel);
+  border-radius: 16px;
+  border: 1px solid #dbeafe;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.1);
+  margin-bottom: 20px;
+}
+
+.table {
+  border-collapse: collapse;
+  border-spacing: 0;
+  font-size: 14px;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+}
+
+@media (max-width: 600px) {
+  .main {
+    padding: 0 8px;
+  }
+
+  .mainInner {
+    padding: 10px 0 20px;
+  }
+
+  .card {
+    padding: 12px;
+  }
+
+  .noticeCard {
+    padding: 14px;
+  }
+
+  .tableWrap {
+    padding: 10px;
+  }
+}

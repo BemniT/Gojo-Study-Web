@@ -1,0 +1,338 @@
+.page {
+  background: #ffffff;
+  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
+  color: #0f172a;
+  --sidebar-width: clamp(230px, 16vw, 290px);
+}
+
+.shellWrap {
+  display: flex;
+  gap: 0;
+  padding: 0;
+  height: calc(100vh - 73px);
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.sidebarSpacer {
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  flex: 0 0 var(--sidebar-width);
+  pointer-events: none;
+  background: #ffffff;
+}
+
+.main {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  margin-left: 0;
+  padding: 0 18px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #ffffff;
+}
+
+.shell {
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 20px 0 28px;
+  display: grid;
+  gap: 14px;
+}
+
+.headerCard,
+.controlsCard,
+.sectionHeadingCard {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.06);
+  padding: 14px 16px;
+}
+
+.headerCard {
+  background: linear-gradient(140deg, #ffffff 0%, #f8fbff 100%);
+  border-color: #dbeafe;
+  border-radius: 16px;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.09);
+}
+
+.title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 900;
+  color: #0f172a;
+  letter-spacing: 0.01em;
+}
+
+.subtitle {
+  margin: 8px 0 0;
+  color: #334155;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.contextStrip,
+.metrics,
+.heroBadges,
+.saveStrip,
+.exportToolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.contextPill,
+.metricChip,
+.savePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.contextPill {
+  background: #eff6ff;
+  border: 1px solid #dbeafe;
+  color: #1d4ed8;
+}
+
+.metricChip {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  color: #334155;
+}
+
+.summaryRow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.summaryCard {
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+  padding: 10px;
+  background: #ffffff;
+  display: grid;
+  gap: 3px;
+}
+
+.summaryLabel {
+  font-size: 10px;
+  color: #64748b;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.summaryValue {
+  font-size: 21px;
+  font-weight: 900;
+  color: #007afb;
+  line-height: 1.1;
+}
+
+.saveStrip {
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+.savePill {
+  background: #f3f8ff;
+  border: 1px solid #d6e6ff;
+  color: #15539f;
+}
+
+.toggleButton {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #1d4ed8;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toggleOn {
+  background: #eff6ff;
+}
+
+.toggleOff {
+  background: #ffffff;
+}
+
+.toggleTrack {
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: #dbeafe;
+  position: relative;
+  display: inline-block;
+}
+
+.toggleThumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.16);
+}
+
+.helperCopy {
+  margin: 8px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.controlField {
+  display: grid;
+  gap: 6px;
+  font-weight: 700;
+  color: #334155;
+  font-size: 13px;
+}
+
+.controlField select,
+.controlField input {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  padding: 9px 11px;
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.controlsCard {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.actionButton,
+.ghostButton,
+.primaryButton,
+.secondaryButton,
+.dangerButton {
+  border-radius: 999px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.primaryButton {
+  border: none;
+  background: #2563eb;
+  color: #ffffff;
+  box-shadow: 0 10px 18px rgba(37, 99, 235, 0.24);
+}
+
+.secondaryButton {
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.ghostButton {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #1d4ed8;
+}
+
+.sectionHeadingCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sectionKicker {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.sectionTitle {
+  margin: 3px 0 4px;
+  font-size: 17px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.sectionSubtitle {
+  margin: 0;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.lp-empty {
+  border: 1px solid #fca5a5;
+  background: #fff1f1;
+  color: #b91c1c;
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-weight: 700;
+}
+
+@media (max-width: 900px) {
+  .controlsCard {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .main {
+    padding: 0 10px;
+  }
+
+  .shell {
+    padding: 12px 0 26px;
+  }
+
+  .title {
+    font-size: 22px;
+  }
+
+  .summaryRow,
+  .controlsCard {
+    grid-template-columns: 1fr;
+  }
+
+  .sectionHeadingCard {
+    align-items: flex-start;
+  }
+
+  .actionButton,
+  .ghostButton,
+  .primaryButton,
+  .secondaryButton,
+  .toggleButton {
+    width: 100%;
+  }
+}

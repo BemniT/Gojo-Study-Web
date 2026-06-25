@@ -1,0 +1,85 @@
+.pageRoot {
+  background: var(--page-bg);
+  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
+  color: var(--text-primary);
+}
+
+.dashboardShell {
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  height: calc(100vh - 73px);
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.sidebarSpacer {
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  flex: 0 0 var(--sidebar-width);
+  pointer-events: none;
+}
+
+.mainContent {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  margin-left: 0;
+  padding: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #ffffff;
+  scroll-padding-bottom: 32px;
+}
+
+.mainInner {
+  width: 100%;
+  max-width: 1500px;
+  margin: 0;
+}
+
+.headerCard {
+  margin-bottom: 14px;
+  background: #ffffff;
+  border: 1px solid #dbeafe;
+  box-shadow: 0 14px 30px rgba(37, 99, 235, 0.1);
+}
+
+.footerCard {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--surface-panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.06);
+}
+
+.footerText {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.saveBtn {
+  padding: 11px 18px;
+  border-radius: 999px;
+  background: var(--accent-strong);
+  color: #fff;
+  font-weight: 700;
+  border: none;
+  box-shadow: 0 10px 22px rgba(29, 78, 216, 0.26);
+  letter-spacing: 0.01em;
+}
+
+@media (max-width: 600px) {
+  .mainInner {
+    padding: 10px 2vw 64px;
+  }
+}
